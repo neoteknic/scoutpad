@@ -3,6 +3,7 @@ node_modules/
 .tools/
 npm-debug.log*
 android-app/.gradle/
+android-app/.kotlin/
 android-app/app/build/
 android-app/app/libs/*.aar
 android-app/app/libs/*.jar

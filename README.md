@@ -16,6 +16,7 @@ Les applications Android et Windows partagent le meme backend dans `bridge/mobil
 ### Changements 1.1.3
 
 - Soundboard : importer un fichier audio, renommer, preecouter localement, jouer sur le haut-parleur du Scout et arreter.
+- Six affectations de sons memorisees : croix haut/bas/gauche/droite, X et Y. Choisir un son ou `Aucun` dans la section Sons. Un appui declenche une seule lecture, sans armement ; la croix ne deplace plus le robot. Les sticks et les fleches du clavier restent disponibles pour piloter.
 - Sons conserves sur l'appareil de controle dans IndexedDB, pas sur le robot. Limites : 24 sons, 30 secondes par son, 10 Mo par fichier, 30 Mo par bibliotheque.
 - Conversion mono AAC-LC 16 kHz : MediaCodec natif sur Android, encodeur FFmpeg audio minimal inclus sur Windows, FFmpeg existant avec Node. MP3/WAV et les autres formats decodables par le navigateur sont acceptes.
 - Lecture sans armer ni deplacer le robot. Simulation n'envoie pas de son ; une suspension de l'application arrete la lecture.
@@ -73,12 +74,13 @@ La manette integree est lue par Android puis transmise a l'interface :
 
 Depuis l'APK 1.1.1, le menu `Manette > Peripherique` permet de choisir un controleur Android, y compris les controleurs integres declares avec seulement des boutons ou un D-pad. Le choix est conserve par descripteur Android, et non par identifiant temporaire. En mode automatique, l'app attend une vraie entree au lieu de verrouiller le premier peripherique de la liste. Le changement de manette arrete et desarme le robot ; une manette choisie mais absente n'est pas remplacee automatiquement.
 
-Le bouton `Armer` et Start connectent ROS avant d'armer. Une nouvelle entree de la manette choisie arme aussi automatiquement ; Start permet toujours de desarmer. Recentrer les sticks avant de piloter apres l'armement ou une suspension. Les menus contextuels et la selection de texte hors champs de saisie sont desactives dans la WebView Android.
+Le bouton `Armer` et Start connectent ROS avant d'armer. Une nouvelle entree analogique de la manette choisie arme aussi automatiquement ; Start permet toujours de desarmer. Les boutons de sons n'arment pas le robot. Recentrer les sticks avant de piloter apres l'armement ou une suspension. Les menus contextuels et la selection de texte hors champs de saisie sont desactives dans la WebView Android.
 
 - Stick gauche vertical : avancer/reculer.
 - Stick gauche horizontal : rotation.
 - Stick droit horizontal : translation gauche/droite.
-- Croix directionnelle : mouvement de secours.
+- Croix directionnelle : quatre sons personnalisables, sans mouvement.
+- X et Y : deux sons personnalisables.
 - A : sortir de la base ou annuler le retour base.
 - B : retour a la base.
 - Start/Menu : armer/desarmer.

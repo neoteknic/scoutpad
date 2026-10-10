@@ -63,6 +63,48 @@ test("A and B actions cannot be overwritten by joystick samples", async()=>{
   assert.deepEqual(h.requests.map((request)=>request.payload.action),["drive","undock","dock"]);
 });
 
+test("six sound buttons never arm or move the robot, including unassigned buttons", async()=>{
+  const h = harness();
+  const sounds = [];
+  h.context.window.scoutSoundboard = { trigger:(index)=>sounds.push(index) };
+  h.run('state.armed=false; [12,13,14,15,2,3].forEach(handleGamepadButton)');
+  assert.deepEqual(sounds, [12,13,14,15,2,3]);
+  assert.equal(h.run('state.armed || state.armPending'), false);
+  assert.equal(h.requests.length, 0);
+  h.run('state.suspended=true; handleGamepadButton(12); state.suspended=false; document.hidden=true; handleGamepadButton(2)');
+  assert.equal(sounds.length, 6);
+  h.context.window.scoutSoundboard = undefined;
+  h.run('document.hidden=false; handleGamepadButton(3)');
+  assert.equal(h.requests.length, 0);
+});
+
+test("browser sound buttons trigger on press edges and D-pad does not affect movement", ()=>{
+  const h = harness();
+  const sounds = [];
+  h.context.window.scoutSoundboard = { trigger:(index)=>sounds.push(index) };
+  h.context.navigator.getGamepads = () => [pad];
+  const pad = { index:0, id:'Xbox', connected:true, axes:[0,0,0,0], buttons:Array.from({length:16},()=>({pressed:false})) };
+  h.run('state.android=false; state.armed=false');
+  for (const index of [12,13,14,15,2,3]) {
+    pad.buttons[index].pressed = true;
+    assert.equal(JSON.stringify(h.run('readGamepadVector()')), JSON.stringify({x:0,y:0,turn:0}));
+    h.run('readGamepadVector()');
+    pad.buttons[index].pressed = false;
+    h.run('readGamepadVector()');
+  }
+  assert.deepEqual(sounds, [12,13,14,15,2,3]);
+  assert.equal(h.requests.length, 0);
+});
+
+test("native sounds respect controller selection and suspension", ()=>{
+  const h = harness();
+  const sounds = [];
+  h.context.window.scoutSoundboard = { trigger:(index)=>sounds.push(index) };
+  h.run('state.nativeGamepad={deviceId:7}; window.scoutNativeButton(12,2); window.scoutNativeButton(12,7); state.controllerMenuOpen=true; window.scoutNativeButton(3,7); state.controllerMenuOpen=false; state.suspended=true; window.scoutNativeButton(2,7)');
+  assert.deepEqual(sounds, [12]);
+  assert.equal(h.requests.length, 0);
+});
+
 test("stop discards queued actions and movement", async()=>{
   const h=harness();
   h.run('sendCommand("drive",{x:0,y:-1,turn:0},true); sendCommand("dock",{x:0,y:0,turn:0},true); sendCommand("stop",{x:0,y:0,turn:0},true);');

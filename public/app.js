@@ -666,9 +666,14 @@ function playNavigationFeedback(event) {
 }
 
 function handleGamepadButton(index) {
+  if ([2, 3, 12, 13, 14, 15].includes(index)) {
+    if (!state.suspended && !document.hidden) window.scoutSoundboard?.trigger(index);
+    return;
+  }
   if (index === 9) { toggleArmed(); return; }
   if (index === 4) toggleVideo();
   if (index === 5) toggleVideoFullscreen();
+  if (index !== 0 && index !== 1) return;
   const action = () => {
     if (index === 0) sendCommand("undock", { x: 0, y: -1, turn: 0 }, true);
     if (index === 1) sendCommand("dock", actionVectors.stop, true);

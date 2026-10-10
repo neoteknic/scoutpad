@@ -18,6 +18,47 @@ let activeId;
 let polling = false;
 let sending = false;
 let hasError = false;
+const bindingKey = "scoutpad-sound-bindings";
+const slots = [[12, "Haut", "arrow-up"], [13, "Bas", "arrow-down"], [14, "Gauche", "arrow-left"], [15, "Droite", "arrow-right"], [2, "X"], [3, "Y"]];
+let bindings = {};
+try {
+  const saved = JSON.parse(localStorage.getItem(bindingKey));
+  for (const [index] of slots) if (typeof saved?.[index] === "string") bindings[index] = saved[index];
+} catch { /* An unavailable or outdated preference must not block the library. */ }
+const bindingMenus = slots.map(([index, label, icon]) => {
+  const row = document.createElement("label"); row.className = "sound-binding";
+  const caption = document.createElement("span");
+  if (icon) { const glyph = document.createElement("i"); glyph.dataset.lucide = icon; caption.append(glyph); }
+  caption.append(label);
+  const select = document.createElement("select"); select.dataset.soundButton = index;
+  select.disabled = true;
+  select.setAttribute("aria-label", `Son : ${label}`);
+  select.addEventListener("change", () => {
+    if (select.value) bindings[index] = select.value; else delete bindings[index];
+    saveBindings();
+    select.blur();
+  });
+  row.append(caption, select); document.querySelector("#soundBindings").append(row);
+  return { index, select };
+});
+let menuVersion;
+function saveBindings() {
+  try { localStorage.setItem(bindingKey, JSON.stringify(bindings)); }
+  catch { message("Affectations non sauvegardees", true); }
+}
+function renderBindings() {
+  const version = JSON.stringify(sounds.map(({ id, name }) => [id, name]));
+  if (menuVersion === version) return;
+  menuVersion = version;
+  let changed = false;
+  for (const { index, select } of bindingMenus) {
+    if (bindings[index] && !sounds.some((sound) => sound.id === bindings[index])) { delete bindings[index]; changed = true; }
+    select.replaceChildren(new Option("Aucun", ""), ...sounds.map((sound) => new Option(sound.name, sound.id)));
+    select.value = bindings[index] || "";
+    select.disabled = !db || !sounds.length;
+  }
+  if (changed) saveBindings();
+}
 
 function message(text, error = false) {
   hasError = error;
@@ -59,7 +100,7 @@ function render() {
     name.setAttribute("aria-label", "Nom du son");
     name.addEventListener("change", async () => {
       const previous = sound.name; sound.name = name.value.trim() || previous; name.value = sound.name;
-      try { await requestStore("readwrite", (store) => store.put(sound)); }
+      try { await requestStore("readwrite", (store) => store.put(sound)); renderBindings(); }
       catch { sound.name = previous; name.value = previous; message("Nom non sauvegarde", true); }
     });
     const duration = document.createElement("span"); duration.className = "sound-duration";
@@ -85,6 +126,7 @@ function render() {
     row.append(name, duration, play, local, remove); list.append(row);
   }
   importer.disabled = busy || !db || sounds.length >= MAX_SOUNDS;
+  renderBindings();
   icons();
 }
 
@@ -168,7 +210,14 @@ async function poll() {
 importer.addEventListener("click", () => picker.click());
 picker.addEventListener("change", () => { if (picker.files[0]) void importSound(picker.files[0]); });
 document.querySelector("#stopSound").addEventListener("click", () => { stopPreview(); void stopRobot(); });
-window.scoutSoundboard = { suspend() { stopPreview(); if (activeId || sending) void stopRobot(false); } };
+window.scoutSoundboard = {
+  trigger(index) {
+    if (document.hidden || document.activeElement?.closest("#soundboard input, #soundBindings")) return;
+    const sound = sounds.find((item) => item.id === bindings[index]);
+    if (sound) void playRobot(sound);
+  },
+  suspend() { stopPreview(); if (activeId || sending) void stopRobot(false); },
+};
 document.addEventListener("visibilitychange", () => { if (document.hidden) window.scoutSoundboard.suspend(); });
 window.addEventListener("pagehide", () => window.scoutSoundboard.suspend());
 document.querySelector("#simulationToggle").addEventListener("change", () => window.scoutSoundboard.suspend());

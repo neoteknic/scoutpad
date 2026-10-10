@@ -135,11 +135,37 @@ async function main() {
       await page.locator('#soundFile').setInputFiles({ name: 'Test.wav', mimeType: 'audio/wav', buffer: fixture });
       await page.waitForFunction(() => document.querySelectorAll('.sound-row').length === 1);
       assert.equal(await page.locator('.sound-row svg').count(), 3);
+      assert.equal(await page.locator('#soundBindings select').count(), 6);
+      const soundId = await page.locator('.sound-row').getAttribute('data-sound-id');
+      for (const index of [12,13,14,15,2,3]) await page.locator(`[data-sound-button="${index}"]`).selectOption(soundId);
       await page.locator('.sound-row input').fill('Mon son');
       await page.locator('.sound-row input').press('Tab');
       await page.waitForTimeout(100);
       await page.reload();
       await page.waitForFunction(() => document.querySelector('.sound-row input')?.value === 'Mon son');
+      for (const index of [12,13,14,15,2,3]) {
+        assert.equal(await page.locator(`[data-sound-button="${index}"]`).inputValue(), soundId);
+        assert.equal(await page.locator(`[data-sound-button="${index}"] option:checked`).textContent(), 'Mon son');
+      }
+      await page.evaluate(() => window.scoutNativeGamepadUpdate([0,0,0,0], [], true, 'Mangmi Air X Integrated Controller', 7));
+      const beforeBindings = audioCommands.length;
+      const beforeMovement = commands.length;
+      await page.locator('[data-sound-button="12"]').focus();
+      await page.evaluate(() => window.scoutNativeButton(12,7));
+      await page.waitForTimeout(80);
+      assert.equal(audioCommands.length, beforeBindings, 'editing assignments must not play');
+      await page.locator('[data-sound-button="12"]').evaluate((node) => node.blur());
+      await page.evaluate(() => window.scoutNativeButton(12,2));
+      await page.waitForTimeout(80);
+      assert.equal(audioCommands.length, beforeBindings, 'wrong controller must not play');
+      for (const index of [12,13,14,15,2,3]) {
+        const beforePress = audioCommands.filter((item) => item.pathname.endsWith('/play')).length;
+        await page.evaluate((button) => window.scoutNativeButton(button,7), index);
+        await page.waitForTimeout(80);
+        assert.equal(audioCommands.filter((item) => item.pathname.endsWith('/play')).length, beforePress + 1);
+      }
+      assert.equal(await page.locator('#armButton').textContent(), 'Armer');
+      assert.ok(!commands.slice(beforeMovement).some((item) => item.action !== 'stop'), 'bindings must not move robot');
       await page.getByRole('button', { name: 'Ecouter ici', exact: true }).click();
       await page.waitForFunction(() => document.querySelector('[aria-label="Ecouter ici"]').getAttribute('aria-pressed') === 'true');
       const beforeAudio = audioCommands.length;
@@ -163,8 +189,29 @@ async function main() {
       assert.equal(await page.locator('.sound-row').count(), 1);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
       await page.screenshot({ path: path.join(root, `.runtime/screenshots/${scenario.name}.png`), fullPage: true });
+      if (scenario.name === 'windows') {
+        await page.reload();
+        await page.waitForFunction(() => document.querySelector('.sound-row input')?.value === 'Mon son');
+        await page.evaluate(() => {
+          window.testPad = { index:0, id:'Xbox Browser', connected:true, mapping:'standard', axes:[0,0,0,0], buttons:Array.from({length:16},()=>({pressed:false,value:0})) };
+          Object.defineProperty(navigator, 'getGamepads', { configurable:true, value:()=>[window.testPad] });
+        });
+        const beforeBrowserMotion = commands.length;
+        for (const index of [12,13,14,15,2,3]) {
+          const beforePress = audioCommands.filter((item) => item.pathname.endsWith('/play')).length;
+          await page.evaluate((button) => { window.testPad.buttons[button] = { pressed:true,value:1 }; }, index);
+          await page.waitForTimeout(220);
+          assert.equal(audioCommands.filter((item) => item.pathname.endsWith('/play')).length, beforePress + 1, 'holding browser button must not repeat sound');
+          await page.evaluate((button) => { window.testPad.buttons[button] = { pressed:false,value:0 }; }, index);
+          await page.waitForTimeout(60);
+        }
+        assert.equal(await page.locator('#armButton').textContent(), 'Armer');
+        assert.ok(!commands.slice(beforeBrowserMotion).some((item) => item.action !== 'stop'));
+      }
       await page.getByRole('button', { name: 'Supprimer le son', exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll('.sound-row').length === 0);
+      for (const index of [12,13,14,15,2,3]) assert.equal(await page.locator(`[data-sound-button="${index}"]`).inputValue(), '');
+      assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('scoutpad-sound-bindings'))), {});
       assert.deepEqual(errors, []);
       await context.close();
       console.log(`PASS ${scenario.name} ${scenario.width}x${scenario.height}`);

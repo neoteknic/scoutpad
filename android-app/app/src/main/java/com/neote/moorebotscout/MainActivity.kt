@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     private lateinit var inputManager: InputManager
     private val axes = FloatArray(4)
     private val buttons = BooleanArray(16)
+    private val dpad = DpadInput()
     private lateinit var controllerSelection: ControllerSelection
     private val observedControllers = mutableSetOf<Int>()
     private var resumed = false
@@ -146,8 +147,8 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
         if (event.action == MotionEvent.ACTION_MOVE && isController(event.source)) {
             if (!resumed) return true
             val device = event.device ?: return super.dispatchGenericMotionEvent(event)
-            var leftX = centeredAxis(event, device, MotionEvent.AXIS_X)
-            var leftY = centeredAxis(event, device, MotionEvent.AXIS_Y)
+            val leftX = centeredAxis(event, device, MotionEvent.AXIS_X)
+            val leftY = centeredAxis(event, device, MotionEvent.AXIS_Y)
             var rightX = centeredAxis(event, device, MotionEvent.AXIS_Z)
             var rightY = centeredAxis(event, device, MotionEvent.AXIS_RZ)
             if (device.getMotionRange(MotionEvent.AXIS_Z, event.source) == null) rightX = centeredAxis(event, device, MotionEvent.AXIS_RX)
@@ -155,11 +156,9 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
 
             val hatX = centeredAxis(event, device, MotionEvent.AXIS_HAT_X)
             val hatY = centeredAxis(event, device, MotionEvent.AXIS_HAT_Y)
-            if (leftX == 0f) leftX = hatX
-            if (leftY == 0f) leftY = hatY
-
             val activeInput = listOf(leftX, leftY, rightX, rightY).any { kotlin.math.abs(it) >= 0.15f }
-            if (!selectController(device, activeInput)) return true
+            if (!selectController(device, activeInput || kotlin.math.abs(hatX) > 0.5f || kotlin.math.abs(hatY) > 0.5f)) return true
+            emitDpad(dpad.hat(hatX, hatY), device.id)
             if (activeInput && !motionActive) emitControllerInput(device.id)
             motionActive = activeInput
 
@@ -185,23 +184,6 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
         if (!isController(event.source) && !KeyEvent.isGamepadButton(event.keyCode) && controllerDevices().none { it.id == device.id }) return super.dispatchKeyEvent(event)
         val pressed = event.action != KeyEvent.ACTION_UP
         if (!selectController(device, pressed && event.repeatCount == 0)) return true
-        if (pressed && event.repeatCount == 0 && event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) emitControllerInput(device.id)
-        if (awaitingNeutral && event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) {
-            if (!pressed) awaitingNeutral = false
-            return true
-        }
-        when (event.keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> axes[0] = if (pressed) -1f else if (axes[0] < 0f) 0f else axes[0]
-            KeyEvent.KEYCODE_DPAD_RIGHT -> axes[0] = if (pressed) 1f else if (axes[0] > 0f) 0f else axes[0]
-            KeyEvent.KEYCODE_DPAD_UP -> axes[1] = if (pressed) -1f else if (axes[1] < 0f) 0f else axes[1]
-            KeyEvent.KEYCODE_DPAD_DOWN -> axes[1] = if (pressed) 1f else if (axes[1] > 0f) 0f else axes[1]
-            else -> Unit
-        }
-        if (event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) {
-            emitGamepadState()
-            return true
-        }
-
         val buttonIndex = when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_A -> 0
             KeyEvent.KEYCODE_BUTTON_B -> 1
@@ -215,9 +197,18 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             KeyEvent.KEYCODE_BUTTON_START -> 9
             KeyEvent.KEYCODE_BUTTON_THUMBL -> 10
             KeyEvent.KEYCODE_BUTTON_THUMBR -> 11
+            KeyEvent.KEYCODE_DPAD_UP -> 12
+            KeyEvent.KEYCODE_DPAD_DOWN -> 13
+            KeyEvent.KEYCODE_DPAD_LEFT -> 14
+            KeyEvent.KEYCODE_DPAD_RIGHT -> 15
             else -> -1
         }
         if (buttonIndex >= 0) {
+            if (buttonIndex >= 12) {
+                if (pressed && event.repeatCount > 0) return true
+                emitDpad(dpad.key(buttonIndex, pressed), device.id)
+                return true
+            }
             val justPressed = pressed && !buttons[buttonIndex] && event.repeatCount == 0
             buttons[buttonIndex] = pressed
             emitGamepadState()
@@ -263,8 +254,17 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     private fun resetInputs() {
         axes.fill(0f)
         buttons.fill(false)
+        dpad.reset()
         awaitingNeutral = true
         motionActive = false
+    }
+
+    private fun emitDpad(edges: List<Int>, deviceId: Int) {
+        for (index in 12..15) buttons[index] = dpad.pressed(index)
+        emitGamepadState()
+        if (pageReady) for (index in edges) {
+            webView.evaluateJavascript("window.scoutNativeButton && window.scoutNativeButton($index,$deviceId);", null)
+        }
     }
 
     private fun emitControllerInput(deviceId: Int) {
