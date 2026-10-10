@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Moorebot Scout Control</title>
+    <link rel="stylesheet" href="/styles.css?v=8">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Moorebot Scout</h1>
+          <p id="connectionText">Robot: 192.168.0.142</p>
+        </div>
+        <div class="top-actions">
+          <span id="gamepadBadge" class="status-badge muted">Manette absente</span>
+          <span id="rosLinkBadge" class="status-badge muted">ROS commande absent</span>
+          <button id="armButton" class="danger" type="button">Armer</button>
+          <button id="stopButton" class="primary" type="button">Stop</button>
+        </div>
+      </header>
+
+      <section class="control-grid">
+        <aside class="panel side-panel">
+          <h2>Controle</h2>
+          <div class="joystick-area" aria-label="Joystick virtuel">
+            <button data-manual="forward" class="pad pad-up" type="button" title="Avancer">↑</button>
+            <button data-manual="left" class="pad pad-left" type="button" title="Translation gauche">←</button>
+            <div class="pad pad-center pad-empty" aria-hidden="true"></div>
+            <button data-manual="right" class="pad pad-right" type="button" title="Translation droite">→</button>
+            <button data-manual="back" class="pad pad-down" type="button" title="Reculer">↓</button>
+          </div>
+          <div class="turn-row">
+            <button data-manual="turnLeft" type="button">Q Rotation gauche</button>
+            <button data-manual="turnRight" type="button">S Rotation droite</button>
+          </div>
+          <label class="range-label">
+            Avance / recul
+            <input id="speedRange" type="range" min="0.15" max="1" step="0.05" value="0.45">
+            <span id="speedValue">45%</span>
+          </label>
+          <label class="range-label">
+            Translation
+            <input id="strafeRange" type="range" min="0.15" max="1" step="0.05" value="0.45">
+            <span id="strafeValue">45%</span>
+          </label>
+          <label class="range-label">
+            Rotation
+            <input id="turnRange" type="range" min="0.15" max="1" step="0.05" value="0.45">
+            <span id="turnValue">45%</span>
+          </label>
+          <div class="metric-list">
+            <div><span>X</span><strong id="axisX">0.00</strong></div>
+            <div><span>Y</span><strong id="axisY">0.00</strong></div>
+            <div><span>Rotation</span><strong id="axisTurn">0.00</strong></div>
+            <div><span>Angle</span><strong id="axisAngle">0 deg</strong></div>
+          </div>
+        </aside>
+
+        <section class="video-panel">
+          <div class="video-toolbar">
+            <div>
+              <h2>Flux video</h2>
+              <p id="videoState">Pret</p>
+            </div>
+            <div class="video-actions">
+              <button id="reloadVideo" type="button">Recharger</button>
+              <button id="startProxy" type="button" data-desktop-only>Proxy RTSP</button>
+            </div>
+          </div>
+          <div class="stream-diagnostics" aria-live="off">
+            <span>Derniere image <strong id="frameAge">--</strong></span>
+            <span>Commande <strong id="commandLatency">--</strong></span>
+          </div>
+          <div id="videoFrame" class="video-frame">
+            <video id="videoElement" controls muted playsinline></video>
+            <img id="mjpegElement" alt="Flux video du Scout">
+            <div id="videoMessage" class="video-message">
+              Configure un flux MJPEG, HLS ou RTSP dans les reglages.
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel side-panel">
+          <h2>Actions</h2>
+          <div class="action-stack">
+            <button data-action="undock" type="button">Espace Sortir / annuler retour</button>
+            <button data-action="dock" type="button">B Retour base</button>
+            <button data-action="lightLow" type="button">Vision nuit -</button>
+            <button data-action="lightHigh" type="button">Vision nuit +</button>
+            <button data-action="photo" type="button" data-desktop-only>Photo</button>
+            <button data-action="recordStart" type="button" data-desktop-only>Enregistrer</button>
+            <button data-action="recordStop" type="button" data-desktop-only>Stop record</button>
+          </div>
+          <h2>Manette</h2>
+          <button id="activateGamepad" type="button">Activer manette</button>
+          <div class="gamepad-list" id="gamepadList">Branche une manette puis appuie sur un bouton.</div>
+          <label class="range-label">
+            Zone morte
+            <input id="deadzoneRange" type="range" min="0" max="0.35" step="0.01" value="0.12">
+            <span id="deadzoneValue">0.12</span>
+          </label>
+          <label class="range-label">
+            Frequence
+            <input id="intervalRange" type="range" min="30" max="150" step="10" value="50">
+            <span id="intervalValue">50 ms</span>
+          </label>
+        </aside>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="settings-header">
+          <h2>Reglages</h2>
+          <span id="sendState" class="status-badge">Envoi actif</span>
+        </div>
+        <div class="settings-grid">
+          <label data-desktop-only>
+            Mode commande
+            <select id="protocolMode">
+              <option value="ros" selected>ROS Scout</option>
+              <option value="http">HTTP custom</option>
+            </select>
+          </label>
+          <label>
+            IP du robot
+            <input id="robotIp" type="text" value="192.168.0.142" autocomplete="off">
+          </label>
+          <label data-desktop-only>
+            Endpoint ROS
+            <input id="rosHost" type="text" value="192.168.0.142:11311" autocomplete="off">
+          </label>
+          <label data-desktop-only>
+            IP locale ROS
+            <input id="localHost" type="text" placeholder="auto" autocomplete="off">
+          </label>
+          <label data-desktop-only>
+            URL video
+            <input id="videoUrl" type="text" value="/api/ros/camera.mjpg" autocomplete="off">
+          </label>
+          <label data-desktop-only>
+            Endpoint commande
+            <input id="commandUrl" type="text" value="http://{ip}/api/drive" autocomplete="off">
+          </label>
+          <label data-desktop-only>
+            Methode
+            <select id="commandMethod">
+              <option>POST</option>
+              <option>PUT</option>
+              <option>GET</option>
+            </select>
+          </label>
+        </div>
+        <label class="template-label" data-desktop-only>
+          Corps JSON template
+          <textarea id="bodyTemplate" spellcheck="false">{"x":{x},"y":{y},"turn":{turn},"speed":{speed},"angle":{angle},"magnitude":{magnitude},"action":"{action}"}</textarea>
+        </label>
+        <div class="settings-footer">
+          <label class="check-row">
+            <input id="simulationToggle" type="checkbox">
+            Simulation: ne pas envoyer au robot
+          </label>
+          <div class="settings-actions">
+            <button id="connectRos" type="button">Connecter ROS</button>
+            <button id="saveSettings" type="button">Sauvegarder</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <h2>Journal</h2>
+        <div id="log"></div>
+      </section>
+    </main>
+
+    <script src="/vendor/hls.min.js?v=8"></script>
+    <script type="module" src="/app.js?v=8"></script>
+  </body>
+</html>

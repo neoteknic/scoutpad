@@ -1,0 +1,175 @@
+# ScoutPad
+
+Petit site local en JavaScript pour piloter un Moorebot Scout depuis un navigateur avec la Gamepad API, des boutons clavier/souris et un panneau video central.
+
+## Applications 1.1.0
+
+Les binaires sont disponibles dans les [releases GitHub](https://github.com/neoteknic/scoutpad/releases).
+
+- Android : installer `ScoutPad-Android-1.1.0.apk`. Le pont ROS est inclus.
+- Windows x64 : extraire `ScoutPad-Windows-x64.zip`, puis ouvrir `ScoutPad.exe`. Le pont ROS est inclus ; aucun Node ou Go a installer. L'icone de notification permet d'arreter le serveur.
+- Windows utilise .NET Framework 4.8 et ouvre l'interface dans le navigateur par defaut, a `http://127.0.0.1:18114/`.
+- Si Windows bloque TCPROS, lancer `Setup-Firewall.ps1` en administrateur sur un reseau prive.
+
+Les applications Android et Windows partagent le meme backend dans `bridge/mobilebridge`. La version Node ci-dessous reste disponible pour les endpoints HTTP personnalises et le proxy RTSP.
+
+### Changements 1.1.0
+
+- Arret prioritaire au relachement d'un stick ; rejet des requetes perimees.
+- Actions A/B preservees, appuis Android courts transmis directement et requetes bornees dans le temps.
+- Detection reelle de la manette ; axes remis a zero lors d'une suspension. Recentrer les sticks avant de reprendre.
+- Surveillance du reseau et du flux video, avec reconnexion progressive et diagnostic de l'age des images.
+- Sortie de base de 1,8 seconde geree independamment du watchdog de pilotage de 260 ms.
+- Fermeture des boucles Go et recuperation apres perte du processus WebView.
+- Reglages distincts pour avance/recul, translation et rotation.
+- Photo, enregistrement, HTTP personnalise et proxy RTSP masques dans les applications natives, ou ils ne sont pas disponibles.
+
+### Verification et Builds
+
+```powershell
+npm test
+cd bridge/mobilebridge
+go test ./...
+go vet ./...
+cd ../..
+npm run build:android
+npm run build:windows
+```
+
+La commande Windows produit `dist/ScoutPad-Windows-x64.zip`. Le build Android produit `Moorebot-Scout-Android.apk`. Les binaires ne sont pas suivis par Git ; ils sont joints aux releases.
+
+Les tests de l'interface utilisent des API simulees et ne font pas bouger le robot. `scripts/check-ui.cjs` peut etre lance avec Playwright installe ; `PLAYWRIGHT_MODULE` et `PLAYWRIGHT_CHANNEL` permettent de choisir le module et le navigateur disponibles.
+
+## APK Android autonome
+
+L'APK [Moorebot-Scout-Android.apk](Moorebot-Scout-Android.apk) embarque directement le bridge Go/ROS et n'a pas besoin du serveur Node sur le PC. Le telephone ou la console Android doit etre connecte au meme reseau Wi-Fi que le robot `192.168.0.142`.
+
+La manette integree est lue par Android puis transmise a l'interface :
+
+- Stick gauche vertical : avancer/reculer.
+- Stick gauche horizontal : rotation.
+- Stick droit horizontal : translation gauche/droite.
+- Croix directionnelle : mouvement de secours.
+- A : sortir de la base ou annuler le retour base.
+- B : retour a la base.
+- Start/Menu : armer/desarmer.
+- L1/LB : video on/off.
+- R1/RB : video plein ecran.
+
+Pour reconstruire l'APK apres une modification :
+
+```powershell
+npm run build:android
+```
+
+Le build necessite Android Studio/JDK, le SDK Android 35, le NDK `27.2.12479018`, Go Mobile et Gradle 8.9 dans `.tools`.
+
+## Demarrage
+
+```powershell
+npm install
+npm start
+```
+
+Ouvre ensuite `http://127.0.0.1:5173`.
+
+Le binaire local `.runtime/scout-bridge.exe` relaie les commandes ROS avec `goroslib`, comme `go-scout`. Si tu dois le reconstruire :
+
+```powershell
+npm run build:bridge
+```
+
+## Commandes ROS inspirees de go-scout
+
+Le mode par defaut utilise le protocole repere dans `Shell-Company/go-scout` :
+
+- ROS Master : `{ip}:11311`
+- mouvement : topic `/cmd_vel` en `geometry_msgs/Twist`, via le bridge goroslib local
+- camera : topic `/CoreNode/jpg`, expose localement en MJPEG via `/api/ros/camera.mjpg`
+- retour base : service `/nav_low_bat`
+- lumiere : service `/CoreNode/adjust_light`
+
+Dans l'interface :
+
+1. Laisse `Mode commande` sur `ROS Scout`.
+2. Verifie `Endpoint ROS` : `192.168.0.142:11311`.
+3. Clique `Connecter ROS`.
+4. Decoche `Simulation`, clique `Armer`, puis teste une commande.
+
+Si la video ROS fonctionne mais que le robot ne bouge pas, regarde `/api/ros/status`.
+
+- `bridge.running: true` : le bridge goroslib est lance et tient `/cmd_vel`.
+- `bridge.lastError` non vide : erreur du bridge a corriger en premier.
+- `ros.framePublishers: 1` : la camera ROS est connectee.
+
+Le port TCPROS local de commande est fixe : `18112`. Il est utilise par `scout-bridge.exe`, pas par le serveur Node.
+
+PowerShell en administrateur :
+
+```powershell
+New-NetFirewallRule -DisplayName "Moorebot Scout ROS TCPROS 18112" -Direction Inbound -LocalPort 18112 -Protocol TCP -Action Allow -Profile Any
+```
+
+## Commandes HTTP custom
+
+L'interface envoie les commandes au serveur Node local, puis le serveur les relaie vers l'endpoint configure dans les reglages. Par defaut, le robot est `192.168.0.142` et l'endpoint est :
+
+```text
+http://{ip}/api/drive
+```
+
+Le corps JSON par defaut est :
+
+```json
+{"x":{x},"y":{y},"turn":{turn},"speed":{speed},"angle":{angle},"magnitude":{magnitude},"action":"{action}"}
+```
+
+Variables disponibles dans les templates : `{ip}`, `{x}`, `{y}`, `{turn}`, `{speed}`, `{angle}`, `{magnitude}`, `{direction}`, `{left}`, `{right}`, `{action}`.
+
+Important : le mode HTTP est conserve comme secours configurable. La valeur par defaut `http://{ip}/api/drive` est un placeholder testable, pas une API Moorebot garantie.
+
+Si `Sortir de la base` ne bouge pas :
+
+1. Le mode `Simulation` doit etre decoche.
+2. Le controle doit etre arme avec `Armer`.
+3. En mode ROS, `/api/ros/status` doit afficher `bridge.running: true`.
+
+## Manette
+
+- Stick gauche vertical : avancer/reculer.
+- Stick gauche horizontal : rotation.
+- Stick droit horizontal : translation gauche/droite.
+- A : sortir de la base ou annuler un retour base en cours.
+- B : retour a la base.
+- Start/Menu : armer/desarmer.
+- L1/LB : video on/off.
+- R1/RB : video plein ecran.
+- Autres touches : inactives pour l'instant.
+
+## Clavier
+
+- Fleche haut/bas : avancer/reculer.
+- Fleche gauche/droite : translation gauche/droite.
+- Q/S : rotation gauche/droite.
+- Espace : sortir de la base ou annuler un retour base en cours.
+- B : retour a la base.
+
+Le controle doit etre arme avec le bouton `Armer` pour envoyer de vraies commandes. En mode simulation, rien n'est envoye au robot.
+
+## Video
+
+Le Scout expose surtout du RTSP selon la documentation publique. Les navigateurs ne lisent pas RTSP directement.
+
+Options :
+
+- Renseigner une URL MJPEG HTTP dans `URL video`.
+- Renseigner une URL HLS `.m3u8`.
+- Laisser une URL `rtsp://...`, puis cliquer sur `Proxy RTSP`. Le projet installe un binaire ffmpeg local via npm et le serveur Node convertit alors le flux RTSP en HLS local.
+
+Exemple :
+
+```text
+rtsp://192.168.0.142:554/live
+```
+
+Si le chemin RTSP exact du Scout differe, remplace-le dans les reglages.
