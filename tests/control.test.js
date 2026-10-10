@@ -78,8 +78,7 @@ test("A preempts B and sends cancellation without forward motion", async()=>{
   assert.equal(h.requests[0].payload.action,"dock");
   assert.equal(h.requests[0].signal.aborted,true);
   assert.equal(h.requests[1].payload.action,"cancelDock");
-  assert.equal(h.requests[1].payload.y,-0.45);
-  // The cancel action, not its unused vector, determines whether motors can move.
+  assert.equal(h.requests[1].payload.y,0);
   await h.drain();
   assert.ok(!h.requests.some((r)=>r.payload.action==="undock"));
 });
@@ -114,6 +113,31 @@ test("late dock acknowledgements cannot restore return mode or play a sound", as
   await new Promise(setImmediate);
   assert.deepEqual(sounds,[]);
   await h.drain();
+});
+
+test("failed cancellation keeps A in cancel mode for a safe retry", async()=>{
+  const h=harness();
+  h.run('handleGamepadButton(1)');
+  await h.drain();
+  h.run('handleGamepadButton(0)');
+  h.requests[1].resolve({ok:false,error:"partial cancellation"}); h.requests[1].resolved=true;
+  await h.drain();
+  assert.equal(h.run("state.cancellationUncertain"),true);
+  assert.equal(h.run("state.returnRequested"),true);
+  h.run('handleGamepadButton(0)');
+  assert.equal(h.requests[2].payload.action,"cancelDock");
+  h.requests[2].resolve({ok:true,feedback:"cancelDock"}); h.requests[2].resolved=true;
+  await h.drain();
+  assert.equal(h.run("state.cancellationUncertain"),false);
+});
+
+test("manual stick commands cannot interfere with an ongoing return", async()=>{
+  const h=harness();
+  h.run('handleGamepadButton(1)');
+  await h.drain();
+  h.run('sendCommand("drive",{x:1,y:-1,turn:1},true); sendCommand("drive",{x:0,y:0,turn:0},true)');
+  assert.equal(h.requests.length,1);
+  assert.equal(h.run("state.returnRequested"),true);
 });
 
 test("hung requests release the queue on timeout", async()=>{

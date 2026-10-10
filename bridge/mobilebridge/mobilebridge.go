@@ -725,11 +725,11 @@ func (c *controller) handleCommand(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		c.setCommandMotion(&req, "stop", 0, 0, 0, true)
+		c.mu.Lock()
+		c.docking = true
+		c.mu.Unlock()
 		err = c.goHome(operation)
 		if err == nil {
-			c.mu.Lock()
-			c.docking = true
-			c.mu.Unlock()
 			feedback = "dock"
 		}
 	case "undock", "cancelDock":

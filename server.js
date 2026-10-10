@@ -207,6 +207,7 @@ async function relayCommand(body) {
 }
 
 async function relayRosCommand(body) {
+  const send = (payload) => sendBridgeCommand({ ...payload, clientId: body.clientId, commandSeq: body.commandSeq });
   const values = buildCommandValues(body);
   const command = { at: new Date().toISOString(), method: "ROS", url: `${values.ip}:11311`, values };
   recentCommands = [command, ...recentCommands].slice(0, 30);
@@ -235,22 +236,22 @@ async function relayRosCommand(body) {
   });
 
   if (values.action === "dock") {
-    const bridge = await sendBridgeCommand({ action: "dock" });
+    const bridge = await send({ action: "dock" });
     return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action || "nav_low_bat", feedback: bridge.feedback };
   }
 
   if (["undock", "cancelDock"].includes(values.action)) {
-    const bridge = await sendBridgeCommand({ action: values.action, y: Math.max(0.3, Math.min(1, Number(body.speed || 0.45))) });
+    const bridge = await send({ action: values.action, y: Math.max(0.3, Math.min(1, Number(body.speed || 0.45))) });
     return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action, feedback: bridge.feedback };
   }
 
   if (values.action === "lightLow") {
-    const bridge = await sendBridgeCommand({ action: "lightLow" });
+    const bridge = await send({ action: "lightLow" });
     return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action || "adjust_light 0" };
   }
 
   if (values.action === "lightHigh") {
-    const bridge = await sendBridgeCommand({ action: "lightHigh" });
+    const bridge = await send({ action: "lightHigh" });
     return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action || "adjust_light 1" };
   }
 
@@ -258,7 +259,7 @@ async function relayRosCommand(body) {
     return { ok: false, simulated: false, protocol: "ros", command, responseStatus: 501, responseText: `Action ROS non implementee par go-scout: ${values.action}` };
   }
 
-  const bridge = await sendBridgeCommand({
+  const bridge = await send({
     action: values.action === "stop" ? "stop" : "drive",
     x: Number(values.x),
     y: -Number(values.y),

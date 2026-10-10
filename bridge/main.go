@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -53,6 +54,8 @@ type navPathCancelService struct {
 }
 
 type commandRequest struct {
+	ClientID   string  `json:"clientId"`
+	CommandSeq uint64  `json:"commandSeq"`
 	Action     string  `json:"action"`
 	X          float64 `json:"x"`
 	Y          float64 `json:"y"`
@@ -67,6 +70,7 @@ type bridgeServer struct {
 	cancelDetectPub *goroslib.Publisher
 	docking         bool
 	actionMu        sync.Mutex
+	sequences       map[string]uint64
 	topic           string
 	startedAt       time.Time
 	lastAction      string
@@ -88,6 +92,13 @@ func main() {
 	tcprosPort := flag.Int("tcpros-port", 18112, "local TCPROS port")
 	listen := flag.String("listen", "127.0.0.1:18114", "local HTTP listen address")
 	flag.Parse()
+	robotHost, _, err := net.SplitHostPort(*master)
+	if err != nil {
+		fail(err)
+	}
+	if ip := net.ParseIP(robotHost).To4(); ip != nil {
+		net.DefaultResolver = robotResolver(ip)
+	}
 
 	conf := goroslib.NodeConf{
 		Name:          "scout-access",
@@ -136,6 +147,7 @@ func main() {
 		pub:             pub,
 		forcePub:        forcePub,
 		cancelDetectPub: cancelDetectPub,
+		sequences:       make(map[string]uint64),
 		topic:           *topic,
 		startedAt:       time.Now(),
 		targetAt:        time.Now(),
@@ -204,6 +216,16 @@ func (s *bridgeServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if req.Action == "" {
 		req.Action = "drive"
 	}
+	s.mu.Lock()
+	if req.ClientID != "" {
+		if req.CommandSeq == 0 || req.CommandSeq <= s.sequences[req.ClientID] {
+			s.mu.Unlock()
+			sendJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": "Commande ancienne"})
+			return
+		}
+		s.sequences[req.ClientID] = req.CommandSeq
+	}
+	s.mu.Unlock()
 
 	var err error
 	feedback := ""
@@ -211,22 +233,33 @@ func (s *bridgeServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	case "dock":
 		s.actionMu.Lock()
 		defer s.actionMu.Unlock()
+		if !s.commandCurrent(req) {
+			err = fmt.Errorf("commande remplacee")
+			break
+		}
 		s.setMotion("stop", 0, 0, 0)
+		s.mu.Lock()
+		s.docking = true
+		s.mu.Unlock()
 		err = callGoHome(s.node)
 		if err == nil {
-			s.mu.Lock()
-			s.docking = true
-			s.mu.Unlock()
 			feedback = "dock"
 		}
 	case "cancelNav", "cancelDock", "undock":
 		s.actionMu.Lock()
 		defer s.actionMu.Unlock()
+		if !s.commandCurrent(req) {
+			err = fmt.Errorf("commande remplacee")
+			break
+		}
 		s.mu.Lock()
 		wasDocking := s.docking
 		s.mu.Unlock()
 		s.setForceMotion("stop", 0, 0, 0)
 		err = s.cancelNavigation()
+		if err == nil && !s.commandCurrent(req) {
+			err = fmt.Errorf("commande remplacee")
+		}
 		if err == nil {
 			s.mu.Lock()
 			s.docking = false
@@ -274,6 +307,12 @@ func (s *bridgeServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	s.lastError = ""
 	s.mu.Unlock()
 	sendJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action, "feedback": feedback})
+}
+
+func (s *bridgeServer) commandCurrent(req commandRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return req.ClientID == "" || s.sequences[req.ClientID] == req.CommandSeq
 }
 
 func (s *bridgeServer) cancelNavigation() error {

@@ -462,6 +462,7 @@ function renderVector(vector) {
 
 async function sendCommand(action, vector = state.lastVector, force = false) {
   if (action === "undock" && state.returnRequested) action = "cancelDock";
+  if (action === "cancelDock") vector = actionVectors.stop;
   const settings = getSettings();
   const scaled = {
     x: clamp(vector.x) * settings.strafeSpeed,

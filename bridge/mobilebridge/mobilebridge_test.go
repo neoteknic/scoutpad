@@ -91,11 +91,13 @@ func TestRobotReturnCancellation(t *testing.T) {
 	defer home.Close()
 	var motionMu sync.Mutex
 	var lastMoving time.Time
+	motionSamples := 0
 	motion, err := goroslib.NewSubscriber(goroslib.SubscriberConf{Node: node, Topic: "/cmd_vel", Callback: func(v *geometry_msgs.Twist) {
+		motionMu.Lock()
+		defer motionMu.Unlock()
+		motionSamples++
 		if v.Linear.X != 0 || v.Linear.Y != 0 || v.Angular.Z != 0 {
-			motionMu.Lock()
 			lastMoving = time.Now()
-			motionMu.Unlock()
 		}
 	}})
 	if err != nil {
@@ -130,7 +132,7 @@ func TestRobotReturnCancellation(t *testing.T) {
 	if result := invoke("dock", 1); result["feedback"] != "dock" {
 		t.Fatal(result)
 	}
-	time.Sleep(2 * time.Second)
+	time.Sleep(6 * time.Second)
 	if result := invoke("cancelDock", 2); result["feedback"] != "cancelDock" {
 		t.Fatal(result)
 	}
@@ -141,11 +143,15 @@ func TestRobotReturnCancellation(t *testing.T) {
 	time.Sleep(11 * time.Second)
 	motionMu.Lock()
 	movingAt := lastMoving
+	samples := motionSamples
 	motionMu.Unlock()
+	if samples == 0 {
+		t.Skip("no robot velocity samples received; repeat with the robot off its dock to verify motion")
+	}
 	if movingAt.After(settled) {
 		t.Fatalf("robot resumed motion after cancellation at %v", movingAt)
 	}
-	t.Log("no autonomous motion during the 10-second observation after cancellation")
+	t.Logf("%d velocity samples received; no autonomous motion during the 10-second observation after cancellation", samples)
 }
 
 func testController(t *testing.T) *controller {
