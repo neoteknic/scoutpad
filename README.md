@@ -2,16 +2,25 @@
 
 Petit site local en JavaScript pour piloter un Moorebot Scout depuis un navigateur avec la Gamepad API, des boutons clavier/souris et un panneau video central.
 
-## Applications 1.1.2
+## Applications 1.1.3
 
 Les binaires sont disponibles dans les [releases GitHub](https://github.com/neoteknic/scoutpad/releases).
 
-- Android : installer `ScoutPad-Android-1.1.2.apk`. Le pont ROS est inclus.
+- Android : installer `ScoutPad-Android-1.1.3.apk`. Le pont ROS est inclus.
 - Windows x64 : extraire `ScoutPad-Windows-x64.zip`, puis ouvrir `ScoutPad.exe`. Le pont ROS est inclus ; aucun Node ou Go a installer. L'icone de notification permet d'arreter le serveur.
 - Windows utilise .NET Framework 4.8 et ouvre l'interface dans le navigateur par defaut, a `http://127.0.0.1:18114/`.
-- Si Windows bloque TCPROS, lancer `Setup-Firewall.ps1` en administrateur sur un reseau prive.
+- Si Windows bloque ROS, lancer `Setup-Firewall.ps1` en administrateur sur un reseau prive. La regle autorise uniquement le programme et l'IP du robot (192.168.0.142 par defaut ; parametre `-RobotIp` pour la changer), y compris le port XML-RPC dynamique et TCPROS.
 
 Les applications Android et Windows partagent le meme backend dans `bridge/mobilebridge`. La version Node ci-dessous reste disponible pour les endpoints HTTP personnalises et le proxy RTSP.
+
+### Changements 1.1.3
+
+- Soundboard : importer un fichier audio, renommer, preecouter localement, jouer sur le haut-parleur du Scout et arreter.
+- Sons conserves sur l'appareil de controle dans IndexedDB, pas sur le robot. Limites : 24 sons, 30 secondes par son, 10 Mo par fichier, 30 Mo par bibliotheque.
+- Conversion mono AAC-LC 16 kHz : MediaCodec natif sur Android, encodeur FFmpeg audio minimal inclus sur Windows, FFmpeg existant avec Node. MP3/WAV et les autres formats decodables par le navigateur sont acceptes.
+- Lecture sans armer ni deplacer le robot. Simulation n'envoie pas de son ; une suspension de l'application arrete la lecture.
+- Le haut-parleur du Scout prend environ 2 secondes a se preparer. L'etat indique l'envoi des trames ROS, pas une confirmation acoustique du robot.
+- Les sons restent propres a l'origine de l'interface : navigateur Node 5173 et application Windows 18114 ont des bibliotheques distinctes. Effacer les donnees de l'app/navigateur supprime les sons.
 
 ### Changements 1.1.2
 

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"moorebot-scout/bridge/robotaudio"
+
 	"github.com/aler9/goroslib"
 	"github.com/aler9/goroslib/pkg/msg"
 	"github.com/aler9/goroslib/pkg/msgs/geometry_msgs"
@@ -91,6 +93,7 @@ func main() {
 	topic := flag.String("topic", "/cmd_vel", "Twist command topic")
 	tcprosPort := flag.Int("tcpros-port", 18112, "local TCPROS port")
 	listen := flag.String("listen", "127.0.0.1:18114", "local HTTP listen address")
+	ffmpeg := flag.String("ffmpeg", "ffmpeg", "Audio encoder path")
 	flag.Parse()
 	robotHost, _, err := net.SplitHostPort(*master)
 	if err != nil {
@@ -166,10 +169,19 @@ func main() {
 		fail(err)
 	}
 	defer homeSub.Close()
+	audio, err := robotaudio.New(n, "/scout-access")
+	if err != nil {
+		fail(err)
+	}
+	defer audio.Close()
 	go s.runPublisher()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
+	audioAPI := &robotaudio.Handler{Current: func() *robotaudio.Player { return audio }, Connect: func(string) (*robotaudio.Player, error) { return audio, nil }, Encode: func(ctx context.Context, pcm []byte) ([]byte, error) {
+		return robotaudio.EncodeFFmpeg(ctx, *ffmpeg, pcm)
+	}}
+	audioAPI.Register(mux)
 	mux.HandleFunc("/command", s.handleCommand)
 
 	fmt.Printf("scout-bridge listening on http://%s\n", *listen)

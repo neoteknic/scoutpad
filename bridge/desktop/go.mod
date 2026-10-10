@@ -9,6 +9,9 @@ require (
 	github.com/gookit/color v1.5.0 // indirect
 	github.com/xo/terminfo v0.0.0-20210125001918-ca9a967f8778 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	moorebot-scout/bridge v0.0.0 // indirect
 )
 
 replace moorebot-scout/mobilebridge => ../mobilebridge
+
+replace moorebot-scout/bridge => ..

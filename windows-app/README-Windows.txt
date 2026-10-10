@@ -1,4 +1,4 @@
-ScoutPad 1.1.2 - Windows x64 portable
+ScoutPad 1.1.3 - Windows x64 portable
 
 Extraire toute l'archive puis ouvrir ScoutPad.exe.
 L'interface s'ouvre dans le navigateur par defaut. Le serveur et le pont ROS sont inclus.
@@ -17,3 +17,10 @@ Le controle demarre desarme. Apres une suspension, remettre les sticks au centre
 Armer ou Start connectent ROS automatiquement. Une nouvelle entree de la manette choisie arme aussi le controle.
 Choisir le peripherique dans le menu Manette. Changer de manette arrete et desarme le robot.
 Windows 10/11 x64 avec .NET Framework 4.8. Aucun Node, Go ou ffmpeg a installer.
+
+Sons : importer, renommer, ecouter ici, jouer sur le robot, arreter.
+24 sons maximum, 30 secondes par son, fichiers de 10 Mo maximum.
+Les sons sont conserves dans le navigateur utilise, pas dans le robot.
+Le haut-parleur prend environ 2 secondes a se preparer. Aucun armement necessaire.
+La suspension de l'interface arrete le son. Aucune nouvelle touche manette n'est assignee.
+Sources et licences de l'encodeur audio : third-party/ffmpeg.

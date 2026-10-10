@@ -4,6 +4,10 @@ go 1.26.7
 
 require github.com/aler9/goroslib v0.0.0-20220831065204-cd7cf8973f37
 
+require moorebot-scout/bridge v0.0.0
+
+replace moorebot-scout/bridge => ..
+
 require (
 	github.com/gookit/color v1.5.0 // indirect
 	github.com/xo/terminfo v0.0.0-20210125001918-ca9a967f8778 // indirect

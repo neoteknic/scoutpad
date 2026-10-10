@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Moorebot Scout Control</title>
-    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=10">
   </head>
   <body>
     <main class="app-shell">
@@ -114,6 +114,19 @@
         </aside>
       </section>
 
+      <section id="soundboard" class="soundboard">
+        <div class="sound-header">
+          <h2>Sons</h2>
+          <span id="soundStatus" role="status">Pret</span>
+          <div class="sound-actions">
+            <button id="importSound" type="button"><i data-lucide="plus"></i>Importer</button>
+            <button id="stopSound" class="sound-icon" type="button" title="Arreter les sons" aria-label="Arreter les sons"><i data-lucide="square"></i></button>
+          </div>
+          <input id="soundFile" type="file" accept="audio/*" hidden>
+        </div>
+        <div id="soundList" class="sound-list"></div>
+      </section>
+
       <section class="panel settings-panel">
         <div class="settings-header">
           <h2>Reglages</h2>
@@ -179,6 +192,8 @@
     </main>
 
     <script src="/vendor/hls.min.js?v=8"></script>
+    <script src="/vendor/lucide.min.js"></script>
     <script type="module" src="/app.js?v=10"></script>
+    <script type="module" src="/soundboard.js?v=1"></script>
   </body>
 </html>

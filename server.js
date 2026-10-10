@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { Socket } from "node:net";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { RosScoutClient } from "./ros-client.js";
+import { encodePCM, readAudioBody, MAX_PCM_BYTES, MAX_AAC_BYTES } from "./audio-server.js";
 
 const root = process.cwd();
 const publicDir = resolve(root, "public");
@@ -31,6 +32,8 @@ let bridgeRetryAfter = 0;
 let currentStreamUrl = "";
 let lastFfmpegError = "";
 let networkStatusCache = null;
+let soundEncoding = false;
+const soundSequences = new Map();
 const mjpegClients = new Set();
 
 rosClient.on("frame", (frame) => {
@@ -302,6 +305,7 @@ async function ensureBridge({ rosHost, localHost, commandTopic }) {
       "-master", rosHost,
       "-host", localHost,
       "-topic", commandTopic,
+      "-ffmpeg", ffmpegPath,
       "-tcpros-port", "18112"
     ],
     { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
@@ -463,6 +467,65 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
+    if (url.pathname.startsWith("/api/soundboard/")) {
+      const action = url.pathname.split("/").pop();
+      if (action === "status" && req.method === "GET" && !bridgeProcess) {
+        sendJson(res, 200, { ok: true, audio: { state: "idle", playing: false } });
+        return;
+      }
+      if (action === "encode" && req.method === "POST") {
+        if (soundEncoding) { sendJson(res, 429, { ok: false, error: "Un import est deja en cours" }); return; }
+        soundEncoding = true;
+        const controller = new AbortController();
+        const onClose = () => { if (!res.writableFinished) controller.abort(); };
+        res.on("close", onClose);
+        try {
+          const pcm = await readAudioBody(req, MAX_PCM_BYTES);
+          const aac = await encodePCM(ffmpegPath, pcm, controller.signal);
+          res.writeHead(200, { "content-type": "audio/aac", "cache-control": "no-store" });
+          res.end(aac);
+        } finally { soundEncoding = false; res.off("close", onClose); }
+        return;
+      }
+      if (!["play", "stop", "status"].includes(action) || req.method !== (action === "status" ? "GET" : "POST")) {
+        sendJson(res, 405, { ok: false, error: "Requete audio invalide" }); return;
+      }
+      const client = req.headers["x-sound-client"];
+      const sequence = Number(req.headers["x-sound-sequence"]);
+      if (action !== "status") {
+        if (typeof client !== "string" || !client.length || client.length > 128 || !Number.isSafeInteger(sequence) || sequence < 1) {
+          sendJson(res, 400, { ok: false, error: "Identifiant de lecture invalide" }); return;
+        }
+        if (sequence <= (soundSequences.get(client) || 0)) {
+          sendJson(res, 409, { ok: false, error: "Lecture remplacee" }); return;
+        }
+        soundSequences.set(client, sequence);
+      }
+      if (action === "stop" && !bridgeProcess) {
+        sendJson(res, 200, { ok: true }); return;
+      }
+      const audio = action === "play" ? await readAudioBody(req, MAX_AAC_BYTES) : undefined;
+      if (action === "play" && url.searchParams.get("simulation") === "true") {
+        sendJson(res, 200, { ok: true, simulated: true }); return;
+      }
+      if (action === "play") {
+        const robotIp = url.searchParams.get("robotIp") || defaultRobotIp;
+        await rosClient.connect({ robotIp, rosHost: `${robotIp}:11311`, enableCommandPublisher: false });
+        await ensureBridge({ rosHost: `${robotIp}:11311`, localHost: rosClient.status().localHost, commandTopic: "/cmd_vel" });
+        if (soundSequences.get(client) !== sequence || res.destroyed) {
+          sendJson(res, 409, { ok: false, error: "Lecture remplacee" }); return;
+        }
+      }
+      const response = await fetch(`${bridgeUrl}${url.pathname}${url.search}`, {
+        method: req.method,
+        headers: action === "status" ? {} : { "X-Sound-Client": client, "X-Sound-Sequence": String(sequence) },
+        body: audio,
+        signal: AbortSignal.timeout(10000)
+      });
+      sendJson(res, response.status, await response.json());
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/status") {
       sendJson(res, 200, {
         ok: true,
@@ -581,6 +644,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/vendor/hls.min.js") {
       const vendorPath = resolve(root, "node_modules", "hls.js", "dist", "hls.min.js");
       await serveFile(res, vendorPath);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/vendor/lucide.min.js") {
+      await serveFile(res, resolve(root, "node_modules/lucide/dist/umd/lucide.min.js"));
       return;
     }
 

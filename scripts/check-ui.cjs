@@ -7,8 +7,22 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 async function main() {
   const root = path.resolve(__dirname, '..');
   const commands = [];
+  const audioCommands = [];
   const server = http.createServer(async (req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname.startsWith('/api/soundboard/')) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      if (pathname.endsWith('/encode')) {
+        assert.ok(body.length > 0 && body.length <= 960000 && body.length % 2 === 0);
+        res.writeHead(200, { 'content-type': 'audio/aac' });
+        res.end(Buffer.from([255,241,96,64,1,95,252,0,0,0])); return;
+      }
+      if (!pathname.endsWith('/status')) audioCommands.push({ pathname, sequence: Number(req.headers['x-sound-sequence']), body, query: req.url });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, simulated: req.url.includes('simulation=true'), audio: { state: 'idle', playing: false } })); return;
+    }
     if (pathname === '/api/command') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -33,6 +47,10 @@ async function main() {
     }
     if (pathname === '/vendor/hls.min.js') {
       res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(''); return;
+    }
+    if (pathname === '/vendor/lucide.min.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      res.end(await fs.readFile(path.join(root, 'node_modules/lucide/dist/umd/lucide.min.js'))); return;
     }
     const filename = pathname === '/' ? '/index.html' : pathname;
     const file = path.resolve(root, 'public', '.' + filename);
@@ -112,7 +130,41 @@ async function main() {
         document.querySelector('#videoFrame').dispatchEvent(event);
         return event.defaultPrevented;
       }), true);
+      const pcm = new ArrayBuffer(8000);
+      const fixture = Buffer.from(await (await import('../public/soundboard-audio.js')).wav(pcm).arrayBuffer());
+      await page.locator('#soundFile').setInputFiles({ name: 'Test.wav', mimeType: 'audio/wav', buffer: fixture });
+      await page.waitForFunction(() => document.querySelectorAll('.sound-row').length === 1);
+      assert.equal(await page.locator('.sound-row svg').count(), 3);
+      await page.locator('.sound-row input').fill('Mon son');
+      await page.locator('.sound-row input').press('Tab');
+      await page.waitForTimeout(100);
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('.sound-row input')?.value === 'Mon son');
+      await page.getByRole('button', { name: 'Ecouter ici', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('[aria-label="Ecouter ici"]').getAttribute('aria-pressed') === 'true');
+      const beforeAudio = audioCommands.length;
+      await page.getByRole('button', { name: 'Jouer sur le robot', exact: true }).click();
+      await page.waitForTimeout(100);
+      await page.getByRole('button', { name: 'Arreter les sons', exact: true }).click();
+      await page.waitForTimeout(100);
+      const sent = audioCommands.slice(beforeAudio);
+      assert.ok(sent.some((item) => item.pathname.endsWith('/play') && item.body.length === 10));
+      assert.ok(sent.some((item) => item.pathname.endsWith('/stop')));
+      assert.ok(sent.at(-1).sequence > sent[0].sequence);
+      assert.equal(await page.locator('#armButton').textContent(), 'Armer', 'sound must not arm robot');
+      await page.locator('#simulationToggle').check();
+      await page.getByRole('button', { name: 'Jouer sur le robot', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('#soundStatus').textContent.includes('Simulation'));
+      assert.ok(audioCommands.at(-1).query.includes('simulation=true'));
+      await page.locator('#simulationToggle').uncheck();
+      const tooLong = Buffer.from(await (await import('../public/soundboard-audio.js')).wav(new ArrayBuffer(31 * 32000)).arrayBuffer());
+      await page.locator('#soundFile').setInputFiles({ name: 'Long.wav', mimeType: 'audio/wav', buffer: tooLong });
+      await page.waitForFunction(() => document.querySelector('#soundStatus').textContent.includes('30 secondes'));
+      assert.equal(await page.locator('.sound-row').count(), 1);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
       await page.screenshot({ path: path.join(root, `.runtime/screenshots/${scenario.name}.png`), fullPage: true });
+      await page.getByRole('button', { name: 'Supprimer le son', exact: true }).click();
+      await page.waitForFunction(() => document.querySelectorAll('.sound-row').length === 0);
       assert.deepEqual(errors, []);
       await context.close();
       console.log(`PASS ${scenario.name} ${scenario.width}x${scenario.height}`);

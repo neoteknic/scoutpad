@@ -2,6 +2,7 @@ package com.neote.moorebotscout
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.hardware.input.InputManager
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -20,6 +21,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import mobilebridge.Mobilebridge
 import org.json.JSONObject
@@ -40,6 +44,11 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     private var pageReady = false
     private var feedbackTone: ToneGenerator? = null
     private val shutdownExecutor = Executors.newSingleThreadExecutor()
+    private var fileChooser: ValueCallback<Array<Uri>>? = null
+    private val chooseSound = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        fileChooser?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+        fileChooser = null
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,6 +60,7 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
         )
 
         val error = Mobilebridge.start("192.168.0.142")
+        Mobilebridge.setSoundEncoder(RobotSoundEncoder())
 
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
@@ -62,6 +72,20 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             settings.loadWithOverviewMode = false
             setBackgroundColor(0xff07110f.toInt())
             webViewClient = AssetInterceptClient(this@MainActivity)
+            webChromeClient = object : WebChromeClient() {
+                override fun onShowFileChooser(view: WebView?, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                    fileChooser?.onReceiveValue(null)
+                    fileChooser = callback
+                    return try {
+                        chooseSound.launch(params.createIntent().apply { type = "audio/*"; addCategory(Intent.CATEGORY_OPENABLE) })
+                        true
+                    } catch (_: RuntimeException) {
+                        fileChooser?.onReceiveValue(null)
+                        fileChooser = null
+                        true
+                    }
+                }
+            }
             addJavascriptInterface(ControllerInterface(), "ScoutInput")
             setOnLongClickListener { true }
         }
@@ -107,6 +131,8 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     }
 
     override fun onDestroy() {
+        fileChooser?.onReceiveValue(null)
+        fileChooser = null
         feedbackTone?.release()
         feedbackTone = null
         if (::inputManager.isInitialized) inputManager.unregisterInputDeviceListener(this)

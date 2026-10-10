@@ -8,9 +8,12 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"moorebot-scout/bridge/robotaudio"
 
 	"github.com/aler9/goroslib"
 	"github.com/aler9/goroslib/pkg/msg"
@@ -125,6 +128,24 @@ type controller struct {
 	reconnectAttempts int
 	inputEpoch        uint64
 	platform          string
+	audio             *robotaudio.Player
+	audioEncoder      SoundEncoder
+	ffmpegPath        string
+}
+
+// SoundEncoder lets Android use its built-in AAC encoder without ffmpeg.
+type SoundEncoder interface {
+	EncodePCM(pcm []byte) ([]byte, error)
+}
+
+func SetSoundEncoder(encoder SoundEncoder) {
+	appMu.Lock()
+	defer appMu.Unlock()
+	if appControl != nil {
+		appControl.mu.Lock()
+		appControl.audioEncoder = encoder
+		appControl.mu.Unlock()
+	}
 }
 
 var (
@@ -167,6 +188,7 @@ func start(robotIP string, assetsDirectory string) string {
 	appControl.platform = "android"
 	if assetsDirectory != "" {
 		appControl.platform = "windows"
+		appControl.ffmpegPath = filepath.Join(filepath.Dir(assetsDirectory), "ffmpeg.exe")
 	}
 	appOwners = 1
 	control := appControl
@@ -181,6 +203,8 @@ func start(robotIP string, assetsDirectory string) string {
 	mux.HandleFunc("/api/ros/disconnect", appControl.handleDisconnect)
 	mux.HandleFunc("/api/ros/camera.mjpg", appControl.handleCamera)
 	mux.HandleFunc("/api/command", appControl.handleCommand)
+	audioAPI := &robotaudio.Handler{Current: control.currentAudio, Connect: control.connectAudio, Encode: control.encodeAudio}
+	audioAPI.Register(mux)
 	mux.HandleFunc("/api/video/status", appControl.handleVideoStatus)
 	mux.HandleFunc("/api/video/start", appControl.handleVideoUnsupported)
 	mux.HandleFunc("/api/video/stop", appControl.handleVideoStop)
@@ -229,6 +253,37 @@ func newController(robotIP string) *controller {
 		frameWait: make(chan struct{}), targetAt: time.Now(), sequences: make(map[string]uint64)}
 }
 
+func (c *controller) currentAudio() *robotaudio.Player {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.audio
+}
+
+func (c *controller) connectAudio(robotIP string) (*robotaudio.Player, error) {
+	if err := c.connect(robotIP); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.suspended || c.audio == nil {
+		return nil, fmt.Errorf("application suspendue ou haut-parleur indisponible")
+	}
+	return c.audio, nil
+}
+
+func (c *controller) encodeAudio(ctx context.Context, pcm []byte) ([]byte, error) {
+	c.mu.Lock()
+	encoder, executable := c.audioEncoder, c.ffmpegPath
+	c.mu.Unlock()
+	if encoder != nil {
+		return encoder.EncodePCM(pcm)
+	}
+	if executable == "" {
+		return nil, fmt.Errorf("encodeur audio indisponible")
+	}
+	return robotaudio.EncodeFFmpeg(ctx, executable, pcm)
+}
+
 // Suspend stops motion independently of WebView timers and queued HTTP requests.
 func Suspend(suspended bool) {
 	appMu.Lock()
@@ -238,6 +293,9 @@ func Suspend(suspended bool) {
 		return
 	}
 	c.mu.Lock()
+	if c.audio != nil {
+		c.audio.Suspend(suspended)
+	}
 	c.suspended = suspended
 	c.inputEpoch++
 	c.motionSeq++
@@ -337,6 +395,16 @@ func (c *controller) connect(robotIP string) error {
 		node.Close()
 		return err
 	}
+	audio, err := robotaudio.New(node, "/scoutpad_"+strings.ReplaceAll(localIP, ".", "_"))
+	if err != nil {
+		homeSub.Close()
+		cancelDetectPub.Close()
+		sub.Close()
+		forcePub.Close()
+		pub.Close()
+		node.Close()
+		return err
+	}
 
 	c.mu.Lock()
 	c.node = node
@@ -345,6 +413,8 @@ func (c *controller) connect(robotIP string) error {
 	c.sub = sub
 	c.cancelDetectPub = cancelDetectPub
 	c.homeSub = homeSub
+	c.audio = audio
+	audio.Suspend(c.suspended)
 	c.robotIP = robotIP
 	c.localIP = localIP
 	c.connectedAt = time.Now()
@@ -370,6 +440,8 @@ func (c *controller) closeROS() {
 	c.mu.Lock()
 	sub, forcePub, pub, node := c.sub, c.forcePub, c.pub, c.node
 	homeSub, cancelDetectPub := c.homeSub, c.cancelDetectPub
+	audio := c.audio
+	c.audio = nil
 	c.homeSub, c.cancelDetectPub = nil, nil
 	c.sub, c.forcePub, c.pub, c.node = nil, nil, nil, nil
 	c.active = false
@@ -387,6 +459,9 @@ func (c *controller) closeROS() {
 	close(c.frameWait)
 	c.frameWait = make(chan struct{})
 	c.mu.Unlock()
+	if audio != nil {
+		audio.Close()
+	}
 	if homeSub != nil {
 		homeSub.Close()
 	}

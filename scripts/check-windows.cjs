@@ -26,6 +26,18 @@ async function checkBackend() {
     const body = await status.json();
     assert.equal(body.platform, 'windows');
     assert.equal(body.defaultRobotIp, '127.0.0.1');
+    const audioStatus = await fetch('http://127.0.0.1:18114/api/soundboard/status');
+    assert.equal((await audioStatus.json()).audio.state, 'idle');
+    const encoded = await fetch('http://127.0.0.1:18114/api/soundboard/encode', { method: 'POST', body: new Uint8Array(8000), signal: AbortSignal.timeout(10000) });
+    assert.equal(encoded.status, 200, 'offline audio encoding failed');
+    const aac = new Uint8Array(await encoded.arrayBuffer());
+    assert.equal(aac[0], 255);
+    assert.equal((aac[2] >> 2) & 15, 8);
+    assert.equal(aac[2] >> 6, 1);
+    const audioStop = await fetch('http://127.0.0.1:18114/api/soundboard/stop', { method: 'POST', headers: { 'X-Sound-Client': 'smoke', 'X-Sound-Sequence': '2' } });
+    assert.equal(audioStop.status, 200);
+    const stalePlay = await fetch('http://127.0.0.1:18114/api/soundboard/play', { method: 'POST', headers: { 'X-Sound-Client': 'smoke', 'X-Sound-Sequence': '1' }, body: aac });
+    assert.equal(stalePlay.status, 409, 'stop must invalidate playback');
     const stop = await fetch('http://127.0.0.1:18114/api/command', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'stop', clientId: 'smoke-test', commandSeq: 1 }),

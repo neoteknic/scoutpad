@@ -378,6 +378,7 @@ window.scoutNativeInput = (deviceId) => {
 
 window.scoutNativeLifecycle = (resumed) => {
   suspendInputs(!resumed);
+  if (!resumed) window.scoutSoundboard?.suspend();
   if (resumed && state.videoEnabled) loadVideo();
 };
 

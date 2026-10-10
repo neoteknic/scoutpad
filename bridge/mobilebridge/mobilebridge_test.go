@@ -3,9 +3,12 @@ package mobilebridge
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"moorebot-scout/bridge/robotaudio"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +20,75 @@ import (
 	"github.com/aler9/goroslib/pkg/msgs/geometry_msgs"
 	"github.com/aler9/goroslib/pkg/msgs/std_msgs"
 )
+
+// Opt-in speaker test only: publishes no movement or navigation commands.
+func TestRobotSpeaker(t *testing.T) {
+	ip := os.Getenv("SCOUT_TEST_SPEAKER")
+	if ip == "" {
+		t.Skip("requires permission and SCOUT_TEST_SPEAKER")
+	}
+	encoder := os.Getenv("SCOUT_TEST_FFMPEG")
+	if encoder == "" {
+		t.Fatal("SCOUT_TEST_FFMPEG required")
+	}
+	pcm := make([]byte, 16000)
+	for i := 0; i < len(pcm)/2; i++ {
+		value := int16(700 * math.Sin(float64(i)*2*math.Pi*660/16000))
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(value))
+	}
+	aac, err := robotaudio.EncodeFFmpeg(context.Background(), encoder, pcm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, err := robotaudio.ParseADTS(aac)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installRobotResolver(ip)
+	node, err := goroslib.NewNode(goroslib.NodeConf{Name: "scoutpad_sound_test", MasterAddress: ip + ":11311", Host: chooseLocalIP(ip), TcprosPort: 18116})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	player, err := robotaudio.New(node, "/scoutpad_sound_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer player.Close()
+	connected := false
+	for deadline := time.Now().Add(6 * time.Second); time.Now().Before(deadline); {
+		conns, err := node.NodeGetConns("/scoutpad_sound_test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, conn := range conns {
+			if conn.Connected && conn.Direction == 'o' && (conn.Topic == "/speaker_cmd" || conn.Topic == "/net_audio_frame") {
+				count++
+			}
+		}
+		if count == 2 {
+			connected = true
+			t.Log("SpeakerNode connected to both audio publishers")
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if !connected {
+		t.Fatal("SpeakerNode did not connect; no sound sent")
+	}
+	if err = player.Play("quiet test", frames); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(6 * time.Second); time.Now().Before(deadline); {
+		if !player.Status().Playing {
+			t.Logf("Sent %d AAC frames; acoustic confirmation requires listening", len(frames))
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("speaker playback did not finish")
+}
 
 func TestCancelNavigationStopsSearchBeforeBothServices(t *testing.T) {
 	var events []string
