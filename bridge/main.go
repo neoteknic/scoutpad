@@ -276,14 +276,6 @@ func (s *bridgeServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action, "feedback": feedback})
 }
 
-func (s *bridgeServer) callGoHomeAsync() {
-	if err := callGoHome(s.node); err != nil {
-		s.mu.Lock()
-		s.lastError = err.Error()
-		s.mu.Unlock()
-	}
-}
-
 func (s *bridgeServer) cancelNavigation() error {
 	// Stop the separate charger-search thread before cancelling path and alignment.
 	for i := 0; i < 4; i++ {

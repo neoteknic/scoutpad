@@ -12,9 +12,11 @@ async function main() {
     if (pathname === '/api/command') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      commands.push(JSON.parse(Buffer.concat(chunks).toString()));
+      const command = JSON.parse(Buffer.concat(chunks).toString());
+      commands.push(command);
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, protocol: 'ros', responseStatus: 200 }));
+      res.end(JSON.stringify({ ok: true, protocol: 'ros', responseStatus: 200,
+        feedback: ['dock', 'cancelDock'].includes(command.action) ? command.action : '' }));
       return;
     }
     if (pathname.endsWith('.mjpg')) {
@@ -66,7 +68,8 @@ async function main() {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, `${scenario.name}: horizontal overflow`);
       assert.ok(await page.locator('#mjpegElement').evaluate((image) => image.complete && image.naturalWidth > 0));
       await page.evaluate(() => {
-        window.ScoutInput = { select(value) { window.selectedDevice = value; }, refresh() {} };
+        window.feedbackEvents = [];
+        window.ScoutInput = { select(value) { window.selectedDevice = value; }, refresh() {}, feedback(event) { window.feedbackEvents.push(event); } };
         window.scoutNativeControllersUpdate([
           { id: 2, name: 'Xbox Wireless Controller', virtual: true },
           { id: 7, name: 'Mangmi Air X Integrated Controller', analog: true },
@@ -94,6 +97,12 @@ async function main() {
       await page.evaluate(() => window.scoutNativeGamepadUpdate([0, 0, 0, 0], [], true, 'Mangmi Air X Integrated Controller', 7));
       await page.waitForTimeout(60);
       assert.ok(commands.slice(before).some((command) => command.action === 'stop'));
+      await page.evaluate(() => window.scoutNativeButton(1, 7));
+      await page.waitForFunction(() => window.feedbackEvents.includes('dock'));
+      await page.evaluate(() => window.scoutNativeButton(0, 7));
+      await page.waitForFunction(() => window.feedbackEvents.includes('cancelDock'));
+      assert.deepEqual(await page.evaluate(() => window.feedbackEvents), ['dock', 'cancelDock']);
+      assert.equal(commands.at(-1).action, 'cancelDock');
       await page.evaluate(() => window.scoutNativeButton(4, 7));
       assert.equal(await page.locator('#mjpegElement').isVisible(), false);
       await page.evaluate(() => window.scoutNativeButton(4, 7));

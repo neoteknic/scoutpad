@@ -36,6 +36,7 @@ const state = {
   manualVector: null,
   navigationBusy: false,
   returnRequested: false,
+  cancellationUncertain: false,
   audioContext: null,
   videoStartedAt: 0,
   videoRetryAt: 0,
@@ -564,16 +565,21 @@ async function flushCommandQueue() {
     const mode = data.simulated ? "simulation" : `${data.protocol === "ros" ? "ROS" : "HTTP"} ${data.responseStatus}`;
     if (data.ok && !data.simulated && command.payload.commandSeq === state.commandSequence) {
       if (data.feedback === "dock") state.returnRequested = true;
-      if (data.feedback === "cancelDock") state.returnRequested = false;
+      if (data.feedback === "cancelDock") {
+        state.returnRequested = false;
+        state.cancellationUncertain = false;
+      }
       playNavigationFeedback(data.feedback);
     }
     if (data.ok && (command.force || command.action !== "drive")) {
       log("Commande envoyee", `${commandLabel(command.action)} | ${mode}`);
     } else if (!data.ok) {
+      if (command.action === "cancelDock") state.cancellationUncertain = true;
       const detail = data.responseText || data.error || mode;
       log("Commande refusee", detail);
     }
   } catch (error) {
+    if (command.action === "cancelDock") state.cancellationUncertain = true;
     if (error.name !== "AbortError" || !["stop", "cancelDock"].includes(state.actionQueue[0]?.action)) {
       log("Erreur commande", error.name === "AbortError" ? "Delai depasse" : error.message);
     }
@@ -687,7 +693,7 @@ async function refreshRosStatus() {
   const ros = status?.ros;
   const bridge = status?.bridge;
   const docking = ros?.docking ?? bridge?.status?.docking;
-  if (!state.navigationBusy && typeof docking === "boolean") state.returnRequested = docking;
+  if (!state.navigationBusy && typeof docking === "boolean" && (docking || !state.cancellationUncertain)) state.returnRequested = docking;
   const frameAge = ros?.lastFrameAt ? Math.max(0, Date.now() - ros.lastFrameAt) : null;
   elements.frameAge.textContent = frameAge === null ? "--" : `${(frameAge / 1000).toFixed(1)} s`;
   if (state.videoEnabled && getSettings().videoUrl.includes("/api/ros/camera.mjpg")) {
