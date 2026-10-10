@@ -213,6 +213,10 @@ h2 {
 button { overflow-wrap: anywhere; }
 
 .gamepad-list { white-space: pre-line; overflow-wrap: anywhere; }
+.controller-choice { display: grid; gap: 5px; font-size: 12px; min-width: 0; }
+.controller-choice select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+body.android-console { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body.android-console input, body.android-console textarea { -webkit-user-select: text; user-select: text; }
 
 [data-manual] { touch-action: none; }
 

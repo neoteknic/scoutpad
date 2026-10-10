@@ -1,7 +1,12 @@
-const CLIENT_VERSION = 8;
+const CLIENT_VERSION = 9;
 
 const state = {
   armed: false,
+  armPending: false,
+  armGeneration: 0,
+  armPromise: null,
+  rosConnectPromise: null,
+  autoInputActive: false,
   gamepadIndex: null,
   gamepadSeenAt: 0,
   lastGamepadId: "",
@@ -21,6 +26,10 @@ const state = {
   hls: null,
   videoEnabled: true,
   nativeGamepad: null,
+  nativeControllers: [],
+  controllerChoice: "auto",
+  controllerOptionsKey: "",
+  controllerMenuOpen: false,
   android: false,
   suspended: false,
   awaitingNeutral: false,
@@ -40,6 +49,7 @@ const elements = {
   rosLinkBadge: document.querySelector("#rosLinkBadge"),
   gamepadList: document.querySelector("#gamepadList"),
   activateGamepad: document.querySelector("#activateGamepad"),
+  controllerSelect: document.querySelector("#controllerSelect"),
   armButton: document.querySelector("#armButton"),
   stopButton: document.querySelector("#stopButton"),
   speedRange: document.querySelector("#speedRange"),
@@ -158,6 +168,10 @@ function updateLabels() {
 }
 
 function setArmed(next, { sendStop = true, writeLog = true } = {}) {
+  if (!next) {
+    state.armGeneration++;
+    state.armPending = false;
+  }
   state.armed = Boolean(next);
   if (state.armed) state.awaitingNeutral = true;
   elements.armButton.textContent = state.armed ? "Desarmer" : "Armer";
@@ -233,8 +247,96 @@ function setGamepadStatus(text, detail, active = false) {
   elements.gamepadList.textContent = detail;
 }
 
-window.scoutNativeGamepadUpdate = (axes = [], pressedButtons = [], connected = true, id = "Manette Android") => {
+async function requestArm() {
+  if (state.armed) return true;
+  if (state.suspended || document.hidden) return false;
+  if (state.armPending) return state.armPromise;
+  const generation = ++state.armGeneration;
+  state.armPending = true;
+  elements.armButton.textContent = "Connexion ROS...";
+  state.armPromise = (async () => {
+    const settings = getSettings();
+    const ready = settings.simulation || settings.protocol !== "ros" || await connectRos({ reconnect: false });
+    if (generation !== state.armGeneration || state.suspended || document.hidden) return false;
+    state.armPending = false;
+    if (ready) setArmed(true);
+    else {
+      setArmed(false);
+      log("Armement impossible", "Connexion ROS indisponible");
+    }
+    return Boolean(ready);
+  })();
+  return state.armPromise;
+}
+
+function toggleArmed() {
+  if (state.armed || state.armPending) setArmed(false);
+  else requestArm();
+}
+
+function clearControllerInput() {
+  state.nativeGamepad = null;
+  state.gamepadIndex = null;
+  state.lastGamepadId = "";
+  state.autoInputActive = false;
+  suspendInputs(state.suspended);
+  setArmed(false, { sendStop: false, writeLog: false });
+}
+
+window.scoutNativeControllerChanged = clearControllerInput;
+
+window.scoutNativeControllersUpdate = (devices = [], selection = {}) => {
   state.android = true;
+  state.nativeControllers = devices;
+  state.controllerChoice = selection.mode === "manual" ? String(selection.selectedId ?? "missing") : "auto";
+  renderControllerOptions();
+};
+
+function renderControllerOptions() {
+  const options = [{ value: "auto", label: "Automatique" }];
+  if (state.android) {
+    for (const device of state.nativeControllers) {
+      const kind = device.virtual ? "virtuel" : device.analog ? "analogique" : "boutons";
+      options.push({ value: String(device.id), label: `${device.name} (#${device.id}, ${kind})` });
+    }
+  } else {
+    for (const pad of getRawGamepads()) {
+      if (pad.connected !== false) options.push({ value: String(pad.index), label: `${pad.id} (#${pad.index})` });
+    }
+  }
+  if (!options.some((option) => option.value === state.controllerChoice)) {
+    options.push({ value: state.controllerChoice, label: "Manette choisie absente" });
+  }
+  const key = JSON.stringify(options);
+  if (state.controllerOptionsKey !== key) {
+    const nodes = options.map(({ value, label }) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    });
+    elements.controllerSelect.replaceChildren(...nodes);
+    state.controllerOptionsKey = key;
+  }
+  elements.controllerSelect.value = state.controllerChoice;
+}
+
+function selectGamepad(value) {
+  clearControllerInput();
+  state.controllerChoice = value;
+  if (state.android) {
+    window.ScoutInput?.select(value);
+  } else {
+    state.gamepadIndex = value === "auto" ? null : Number(value);
+    latchPressedButtons(pickGamepad());
+  }
+  renderControllerOptions();
+  log("Manette choisie", elements.controllerSelect.selectedOptions[0]?.textContent || value);
+}
+
+window.scoutNativeGamepadUpdate = (axes = [], pressedButtons = [], connected = true, id = "Manette Android", deviceId = null) => {
+  state.android = true;
+  if (connected && state.controllerChoice !== "auto" && String(deviceId) !== state.controllerChoice) return;
   if (!connected) {
     state.nativeGamepad = null;
     state.gamepadIndex = null;
@@ -248,8 +350,10 @@ window.scoutNativeGamepadUpdate = (axes = [], pressedButtons = [], connected = t
     pressed: Boolean(pressedButtons[index]),
     value: pressedButtons[index] ? 1 : 0
   }));
+  if (state.nativeGamepad && state.nativeGamepad.deviceId !== deviceId) clearControllerInput();
   state.nativeGamepad = {
     id,
+    deviceId,
     index: 99,
     connected: true,
     axes: [Number(axes[0] || 0), Number(axes[1] || 0), Number(axes[2] || 0), Number(axes[3] || 0)],
@@ -258,8 +362,14 @@ window.scoutNativeGamepadUpdate = (axes = [], pressedButtons = [], connected = t
   rememberGamepad(state.nativeGamepad);
 };
 
-window.scoutNativeButton = (index) => {
+window.scoutNativeButton = (index, deviceId = null) => {
+  if (deviceId !== state.nativeGamepad?.deviceId) return;
+  if (state.controllerMenuOpen) return;
   if (!state.suspended && !document.hidden) handleGamepadButton(index);
+};
+
+window.scoutNativeInput = (deviceId) => {
+  if (!state.controllerMenuOpen && state.nativeGamepad?.deviceId === deviceId) requestArm();
 };
 
 window.scoutNativeLifecycle = (resumed) => {
@@ -268,6 +378,7 @@ window.scoutNativeLifecycle = (resumed) => {
 };
 
 function suspendInputs(suspended) {
+  if (state.armPending) setArmed(false, { sendStop: false, writeLog: false });
   state.suspended = suspended;
   state.awaitingNeutral = true;
   state.keys.clear();
@@ -304,6 +415,11 @@ function rememberGamepad(pad) {
 
 function pickGamepad() {
   const pads = getRawGamepads();
+  if (!state.android && state.controllerChoice !== "auto") {
+    const selected = pads.find((pad) => String(pad.index) === state.controllerChoice && pad.connected !== false);
+    if (selected) rememberGamepad(selected);
+    return selected || null;
+  }
   const preferred = Number.isInteger(state.gamepadIndex) ? pads.find((pad) => pad?.index === state.gamepadIndex) : null;
   const firstConnected = pads.find((pad) => pad && pad.connected !== false);
   const pad = preferred && preferred.connected !== false ? preferred : firstConnected;
@@ -313,6 +429,13 @@ function pickGamepad() {
 
 function activateGamepad() {
   window.focus();
+  if (state.android) {
+    if (state.controllerChoice === "auto") selectGamepad("auto");
+    window.ScoutInput?.refresh();
+    renderControllerOptions();
+    return;
+  }
+  renderControllerOptions();
   const pad = pickGamepad();
   if (pad) {
     setGamepadStatus("Manette active", `${pad.id}\nA sortie/annule | B base | Start armer | L1 video | R1 plein ecran`, true);
@@ -462,7 +585,8 @@ function readGamepadVector() {
       return null;
     }
     state.gamepadIndex = null;
-    setGamepadStatus("Manette absente", "Branche une manette puis appuie sur un bouton.", false);
+    setGamepadStatus("Manette absente", state.controllerChoice !== "auto" ? "Manette choisie absente." :
+      state.android && state.nativeControllers.length ? "En attente d'entree manette." : "Aucune manette connectee.", false);
     return null;
   }
 
@@ -472,20 +596,27 @@ function readGamepadVector() {
   const leftX = applyDeadzone(pad.axes[0] || 0, settings.deadzone);
   const leftY = applyDeadzone(pad.axes[1] || 0, settings.deadzone);
   const rightX = applyDeadzone(pad.axes[2] || 0, settings.deadzone);
+  const active = Math.hypot(leftX, leftY, rightX) > 0.05;
+  if (active && !state.autoInputActive && !state.controllerMenuOpen) requestArm();
+  state.autoInputActive = active;
 
-  if (pad.index !== 99) {
-    for (const index of [0, 1, 4, 5, 9]) onButtonPress(pad, index, () => handleGamepadButton(index));
+  if (pad.index !== 99 && !state.controllerMenuOpen) {
+    pad.buttons.forEach((_, index) => onButtonPress(pad, index, () => handleGamepadButton(index)));
   }
 
   return { x: rightX, y: leftY, turn: leftX };
 }
 
 function handleGamepadButton(index) {
-  if (index === 0) sendCommand("undock", { x: 0, y: -1, turn: 0 }, true);
-  if (index === 1) sendCommand("dock", actionVectors.stop, true);
+  if (index === 9) { toggleArmed(); return; }
   if (index === 4) toggleVideo();
   if (index === 5) toggleVideoFullscreen();
-  if (index === 9) setArmed(!state.armed);
+  const action = () => {
+    if (index === 0) sendCommand("undock", { x: 0, y: -1, turn: 0 }, true);
+    if (index === 1) sendCommand("dock", actionVectors.stop, true);
+  };
+  if (state.armed && !state.suspended && !document.hidden) action();
+  else requestArm().then((ready) => { if (ready && state.armed) action(); });
 }
 
 async function refreshRosStatus() {
@@ -668,7 +799,14 @@ async function toggleVideoFullscreen() {
   }
 }
 
-async function connectRos() {
+async function connectRos({ reconnect = true } = {}) {
+  if (state.rosConnectPromise) return state.rosConnectPromise;
+  state.rosConnectPromise = performRosConnection(reconnect);
+  try { return await state.rosConnectPromise; }
+  finally { state.rosConnectPromise = null; }
+}
+
+async function performRosConnection(reconnect) {
   const settings = getSettings();
   try {
     elements.connectRos.disabled = true;
@@ -676,14 +814,17 @@ async function connectRos() {
     const data = await fetchJSON("/api/ros/connect", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...settings, reconnect: true })
+      body: JSON.stringify({ ...settings, reconnect })
     }, 5000);
-    elements.videoUrl.value = data.cameraUrl;
+    if (data.cameraUrl) elements.videoUrl.value = data.cameraUrl;
     updateLabels();
-    loadVideo(data.cameraUrl);
-    log("ROS connecte", `${data.ros.masterUri} via ${data.ros.localHost}`);
+    if (state.videoEnabled && data.cameraUrl && reconnect) loadVideo(data.cameraUrl);
+    state.backendLost = false;
+    log("ROS connecte", data.ros?.masterUri || settings.robotIp);
+    return true;
   } catch (error) {
     log("Erreur ROS", error.message);
+    return false;
   } finally {
     elements.connectRos.disabled = false;
     elements.connectRos.textContent = "Connecter ROS";
@@ -733,13 +874,31 @@ function bindEvents() {
   });
 
   elements.armButton.addEventListener("click", () => {
-    setArmed(!state.armed);
+    toggleArmed();
   });
 
-  elements.stopButton.addEventListener("click", () => sendCommand("stop", { x: 0, y: 0, turn: 0 }, true));
+  elements.stopButton.addEventListener("click", () => {
+    if (state.armPending) setArmed(false, { sendStop: false });
+    sendCommand("stop", actionVectors.stop, true);
+  });
   elements.saveSettings.addEventListener("click", saveSettings);
   elements.connectRos.addEventListener("click", connectRos);
   elements.activateGamepad.addEventListener("click", activateGamepad);
+  elements.controllerSelect.addEventListener("change", () => {
+    selectGamepad(elements.controllerSelect.value);
+    elements.controllerSelect.blur();
+    state.controllerMenuOpen = false;
+  });
+  elements.controllerSelect.addEventListener("focus", () => {
+    state.controllerMenuOpen = true;
+    suspendInputs(state.suspended);
+    setArmed(false, { sendStop: false, writeLog: false });
+  });
+  elements.controllerSelect.addEventListener("blur", () => {
+    state.controllerMenuOpen = false;
+    latchPressedButtons(pickGamepad());
+    state.awaitingNeutral = true;
+  });
   elements.reloadVideo.addEventListener("click", () => loadVideo());
   elements.startProxy.addEventListener("click", startRtspProxy);
 
@@ -817,6 +976,10 @@ function bindEvents() {
   window.addEventListener("blur", () => suspendInputs(true));
   window.addEventListener("focus", () => suspendInputs(false));
   window.addEventListener("pagehide", () => suspendInputs(true));
+  document.addEventListener("contextmenu", (event) => { if (state.android) event.preventDefault(); });
+  document.addEventListener("selectstart", (event) => {
+    if (state.android && !event.target.closest("input, textarea, [contenteditable='true']")) event.preventDefault();
+  });
   elements.mjpegElement.addEventListener("error", () => {
     if (!state.videoEnabled) return;
     elements.videoState.textContent = "Reconnexion video";
@@ -825,14 +988,15 @@ function bindEvents() {
   });
 
   window.addEventListener("gamepadconnected", (event) => {
-    rememberGamepad(event.gamepad);
-    setGamepadStatus("Manette active", `${event.gamepad.id}\nA sortie/annule | B base | Start armer | L1 video | R1 plein ecran`, true);
+    if (state.android) return;
+    renderControllerOptions();
     log("Manette connectee", event.gamepad.id);
   });
 
-  window.addEventListener("gamepaddisconnected", () => {
-    state.gamepadIndex = null;
-    suspendInputs(false);
+  window.addEventListener("gamepaddisconnected", (event) => {
+    if (state.android) return;
+    if (event.gamepad.index === state.gamepadIndex) clearControllerInput();
+    renderControllerOptions();
     log("Manette deconnectee");
   });
 }
@@ -853,10 +1017,11 @@ async function init() {
     document.querySelectorAll("[data-desktop-only]").forEach((element) => { element.hidden = true; });
     if (state.android) {
       document.querySelector('[data-action="undock"]').textContent = "A Sortir / annuler retour";
-      elements.activateGamepad.textContent = "Detecter manette";
+      elements.activateGamepad.textContent = "Actualiser manettes";
     }
   }
   bindEvents();
+  renderControllerOptions();
   setArmed(false, { sendStop: false, writeLog: false });
   loadVideo();
   controlLoop();

@@ -65,24 +65,44 @@ async function main() {
       assert.equal(await page.locator('#turnRange').isVisible(), true);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, `${scenario.name}: horizontal overflow`);
       assert.ok(await page.locator('#mjpegElement').evaluate((image) => image.complete && image.naturalWidth > 0));
-      await page.locator('#armButton').click();
       await page.evaluate(() => {
-        window.scoutNativeGamepadUpdate([0, 0, 0, 0], [], true, 'Console de test');
+        window.ScoutInput = { select(value) { window.selectedDevice = value; }, refresh() {} };
+        window.scoutNativeControllersUpdate([
+          { id: 2, name: 'Xbox Wireless Controller', virtual: true },
+          { id: 7, name: 'Mangmi Air X Integrated Controller', analog: true },
+        ], { mode: 'auto' });
+        window.scoutNativeGamepadUpdate([0, 0, 0, 0], [], true, 'Xbox Wireless Controller', 2);
       });
+      assert.equal(await page.locator('#controllerSelect option').count(), 3);
+      await page.locator('#controllerSelect').selectOption('7');
+      assert.equal(await page.evaluate(() => window.selectedDevice), '7');
+      assert.equal(await page.locator('#armButton').textContent(), 'Armer');
+      await page.evaluate(() => {
+        window.scoutNativeGamepadUpdate([0, -1, 0, 0], [], true, 'Xbox Wireless Controller', 2);
+        window.scoutNativeButton(9, 2);
+      });
+      assert.equal(await page.locator('#armButton').textContent(), 'Armer');
+      await page.evaluate(() => window.scoutNativeGamepadUpdate([0, 0, 0, 0], [], true, 'Mangmi Air X Integrated Controller', 7));
       await page.waitForTimeout(60);
-      await page.evaluate(() => window.scoutNativeButton(0));
+      await page.evaluate(() => window.scoutNativeButton(0, 7));
+      await page.waitForFunction(() => document.querySelector('#armButton').textContent === 'Desarmer');
       await page.waitForTimeout(60);
       assert.ok(commands.some((command) => command.action === 'undock'));
-      await page.evaluate(() => window.scoutNativeGamepadUpdate([0, -0.8, 0, 0], [], true, 'Console de test'));
+      await page.evaluate(() => window.scoutNativeGamepadUpdate([0, -0.8, 0, 0], [], true, 'Mangmi Air X Integrated Controller', 7));
       await page.waitForTimeout(100);
       const before = commands.length;
-      await page.evaluate(() => window.scoutNativeGamepadUpdate([0, 0, 0, 0], [], true, 'Console de test'));
+      await page.evaluate(() => window.scoutNativeGamepadUpdate([0, 0, 0, 0], [], true, 'Mangmi Air X Integrated Controller', 7));
       await page.waitForTimeout(60);
       assert.ok(commands.slice(before).some((command) => command.action === 'stop'));
-      await page.evaluate(() => window.scoutNativeButton(4));
+      await page.evaluate(() => window.scoutNativeButton(4, 7));
       assert.equal(await page.locator('#mjpegElement').isVisible(), false);
-      await page.evaluate(() => window.scoutNativeButton(4));
+      await page.evaluate(() => window.scoutNativeButton(4, 7));
       assert.equal(await page.locator('#mjpegElement').isVisible(), true);
+      assert.equal(await page.evaluate(() => {
+        const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+        document.querySelector('#videoFrame').dispatchEvent(event);
+        return event.defaultPrevented;
+      }), true);
       await page.screenshot({ path: path.join(root, `.runtime/screenshots/${scenario.name}.png`), fullPage: true });
       assert.deepEqual(errors, []);
       await context.close();

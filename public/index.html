@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Moorebot Scout Control</title>
-    <link rel="stylesheet" href="/styles.css?v=8">
+    <link rel="stylesheet" href="/styles.css?v=9">
   </head>
   <body>
     <main class="app-shell">
@@ -94,7 +94,12 @@
             <button data-action="recordStop" type="button" data-desktop-only>Stop record</button>
           </div>
           <h2>Manette</h2>
-          <button id="activateGamepad" type="button">Activer manette</button>
+          <label class="controller-choice" for="controllerSelect">Peripherique
+            <select id="controllerSelect">
+              <option value="auto">Automatique</option>
+            </select>
+          </label>
+          <button id="activateGamepad" type="button">Actualiser manettes</button>
           <div class="gamepad-list" id="gamepadList">Branche une manette puis appuie sur un bouton.</div>
           <label class="range-label">
             Zone morte
@@ -174,6 +179,6 @@
     </main>
 
     <script src="/vendor/hls.min.js?v=8"></script>
-    <script type="module" src="/app.js?v=8"></script>
+    <script type="module" src="/app.js?v=9"></script>
   </body>
 </html>

@@ -2,16 +2,24 @@
 
 Petit site local en JavaScript pour piloter un Moorebot Scout depuis un navigateur avec la Gamepad API, des boutons clavier/souris et un panneau video central.
 
-## Applications 1.1.0
+## Applications 1.1.1
 
 Les binaires sont disponibles dans les [releases GitHub](https://github.com/neoteknic/scoutpad/releases).
 
-- Android : installer `ScoutPad-Android-1.1.0.apk`. Le pont ROS est inclus.
+- Android : installer `ScoutPad-Android-1.1.1.apk`. Le pont ROS est inclus.
 - Windows x64 : extraire `ScoutPad-Windows-x64.zip`, puis ouvrir `ScoutPad.exe`. Le pont ROS est inclus ; aucun Node ou Go a installer. L'icone de notification permet d'arreter le serveur.
 - Windows utilise .NET Framework 4.8 et ouvre l'interface dans le navigateur par defaut, a `http://127.0.0.1:18114/`.
 - Si Windows bloque TCPROS, lancer `Setup-Firewall.ps1` en administrateur sur un reseau prive.
 
 Les applications Android et Windows partagent le meme backend dans `bridge/mobilebridge`. La version Node ci-dessous reste disponible pour les endpoints HTTP personnalises et le proxy RTSP.
+
+### Changements 1.1.1
+
+- Menu de selection de manette ; choix Android memorise par descripteur.
+- Detection automatique Android basee sur une vraie entree, sans verrouillage du premier controleur annonce.
+- Connexion ROS avant l'armement, et armement automatique sur une nouvelle entree de la manette choisie.
+- Start reste un interrupteur armer/desarmer ; un stick maintenu ne rearme pas apres desarmement.
+- Menu contextuel et selection de texte hors champs desactives dans la WebView Android.
 
 ### Changements 1.1.0
 
@@ -45,6 +53,10 @@ Les tests de l'interface utilisent des API simulees et ne font pas bouger le rob
 L'APK [Moorebot-Scout-Android.apk](Moorebot-Scout-Android.apk) embarque directement le bridge Go/ROS et n'a pas besoin du serveur Node sur le PC. Le telephone ou la console Android doit etre connecte au meme reseau Wi-Fi que le robot `192.168.0.142`.
 
 La manette integree est lue par Android puis transmise a l'interface :
+
+Depuis l'APK 1.1.1, le menu `Manette > Peripherique` permet de choisir un controleur Android, y compris les controleurs integres declares avec seulement des boutons ou un D-pad. Le choix est conserve par descripteur Android, et non par identifiant temporaire. En mode automatique, l'app attend une vraie entree au lieu de verrouiller le premier peripherique de la liste. Le changement de manette arrete et desarme le robot ; une manette choisie mais absente n'est pas remplacee automatiquement.
+
+Le bouton `Armer` et Start connectent ROS avant d'armer. Une nouvelle entree de la manette choisie arme aussi automatiquement ; Start permet toujours de desarmer. Recentrer les sticks avant de piloter apres l'armement ou une suspension. Les menus contextuels et la selection de texte hors champs de saisie sont desactives dans la WebView Android.
 
 - Stick gauche vertical : avancer/reculer.
 - Stick gauche horizontal : rotation.
@@ -131,7 +143,7 @@ Important : le mode HTTP est conserve comme secours configurable. La valeur par 
 Si `Sortir de la base` ne bouge pas :
 
 1. Le mode `Simulation` doit etre decoche.
-2. Le controle doit etre arme avec `Armer`.
+2. Le controle doit etre arme avec `Armer`, Start, ou une entree de la manette choisie.
 3. En mode ROS, `/api/ros/status` doit afficher `bridge.running: true`.
 
 ## Manette
@@ -154,7 +166,7 @@ Si `Sortir de la base` ne bouge pas :
 - Espace : sortir de la base ou annuler un retour base en cours.
 - B : retour a la base.
 
-Le controle doit etre arme avec le bouton `Armer` pour envoyer de vraies commandes. En mode simulation, rien n'est envoye au robot.
+Le controle doit etre arme pour envoyer de vraies commandes. `Armer` ou Start connectent ROS automatiquement ; une nouvelle entree de la manette choisie arme aussi le controle. En mode simulation, rien n'est envoye au robot.
 
 ## Video
 

@@ -1,4 +1,4 @@
-ScoutPad 1.1.0 - Windows x64 portable
+ScoutPad 1.1.1 - Windows x64 portable
 
 Extraire toute l'archive puis ouvrir ScoutPad.exe.
 L'interface s'ouvre dans le navigateur par defaut. Le serveur et le pont ROS sont inclus.
@@ -12,4 +12,6 @@ Stick gauche : avance/recul et rotation. Stick droit horizontal : translation.
 Clavier : fleches pour le mouvement, Q/S pour la rotation, Espace pour sortir, B pour rentrer.
 
 Le controle demarre desarme. Apres une suspension, remettre les sticks au centre.
+Armer ou Start connectent ROS automatiquement. Une nouvelle entree de la manette choisie arme aussi le controle.
+Choisir le peripherique dans le menu Manette. Changer de manette arrete et desarme le robot.
 Windows 10/11 x64 avec .NET Framework 4.8. Aucun Node, Go ou ffmpeg a installer.

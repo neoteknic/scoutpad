@@ -15,7 +15,8 @@ function harness({ timeoutImmediately = false } = {}) {
     if (!nodes.has(selector)) nodes.set(selector, {
       value: values[selector.slice(1)] || "", checked: false, textContent: "", children: [],
       classList: { toggle(){}, add(){}, remove(){}, contains(){return false;} },
-      prepend(){}, style:{}, pause(){}, removeAttribute(){}, addEventListener(){},
+      prepend(){}, style:{}, pause(){}, removeAttribute(){}, addEventListener(){}, selectedOptions:[],
+      replaceChildren(...children){this.children=children;},
     });
     return nodes.get(selector);
   };
@@ -27,7 +28,7 @@ function harness({ timeoutImmediately = false } = {}) {
     setTimeout: timeoutImmediately ? (fn)=>setTimeout(fn, 0) : setTimeout, clearTimeout,
     fetch: (url, options) => new Promise((resolve,reject) => {
       const request = {url, payload:JSON.parse(options.body), signal:options.signal,
-        resolve:()=>resolve({ok:true,json:async()=>({ok:true,protocol:"ros",responseStatus:200})})};
+        resolve:(data={ok:true,protocol:"ros",responseStatus:200})=>resolve({ok:data.ok!==false,json:async()=>data})};
       requests.push(request);
       options.signal.addEventListener("abort", ()=>{const error=new Error("aborted");error.name="AbortError";reject(error);},{once:true});
     }),
@@ -35,7 +36,7 @@ function harness({ timeoutImmediately = false } = {}) {
   vm.runInContext(source,context);
   vm.runInContext("state.armed=true; state.awaitingNeutral=false;",context);
   return { context, requests, events, run:(code)=>vm.runInContext(code,context), time:(value)=>{now=value;}, node:getNode,
-    async drain() { for(let i=0;i<10;i++){ requests.find((request)=>!request.resolved && !request.signal.aborted)?.resolve(); requests.forEach((request)=>{request.resolved=true;}); await new Promise(setImmediate); } },
+    async drain() { for(let i=0;i<10;i++){ for(const request of requests.filter((request)=>!request.resolved && !request.signal.aborted)){ request.resolve(); request.resolved=true; } await new Promise(setImmediate); } },
   };
 }
 
@@ -114,4 +115,129 @@ test("advance, translation and rotation speeds are independent", async()=>{
   assert.equal(h.requests[0].payload.y,-0.45);
   assert.equal(h.requests[0].payload.turn,0.8);
   await h.drain();
+});
+
+test("native selector lists Android devices instead of just the current pad", ()=>{
+  const h=harness();
+  h.run('window.scoutNativeControllersUpdate([{id:2,name:"Xbox Wireless Controller",virtual:true},{id:7,name:"Mangmi Air X",analog:true}],{mode:"auto"})');
+  const options=h.node("#controllerSelect").children;
+  assert.deepEqual(options.map((option)=>option.value),["auto","2","7"]);
+  assert.match(options[1].textContent,/virtuel/);
+  assert.match(options[2].textContent,/Mangmi Air X/);
+});
+
+test("choosing a native device stops and disarms before accepting the new pad", async()=>{
+  const h=harness();
+  const selections=[];
+  h.context.window.ScoutInput={select:(value)=>selections.push(value)};
+  h.run('window.scoutNativeControllersUpdate([{id:2,name:"Xbox"},{id:7,name:"Mangmi"}],{mode:"auto"}); window.scoutNativeGamepadUpdate([0,-1,0,0],[],true,"Xbox",2); selectGamepad("7");');
+  assert.equal(h.run("state.armed"),false);
+  assert.equal(h.run("state.nativeGamepad"),null);
+  assert.deepEqual(selections,["7"]);
+  h.run('window.scoutNativeGamepadUpdate([0,-1,0,0],[],true,"Xbox",2); window.scoutNativeButton(9,2);');
+  assert.equal(h.run("state.armed"),false);
+  assert.equal(h.run("state.nativeGamepad"),null);
+  h.run('window.scoutNativeGamepadUpdate([0,0,0,0],[],true,"Mangmi",7); window.scoutNativeButton(9,7);');
+  assert.equal(h.run("state.armed"),false);
+  await h.drain();
+  assert.equal(h.run("state.armed"),true);
+  assert.equal(h.run("pickGamepad().id"),"Mangmi");
+  await h.drain();
+  assert.ok(h.requests.filter((request)=>request.url==="/api/command").every((request)=>request.payload.action==="stop"));
+});
+
+test("missing manual controller remains selected instead of falling back to the phantom pad", ()=>{
+  const h=harness();
+  h.run('window.scoutNativeControllersUpdate([{id:2,name:"Xbox"}],{mode:"manual",selectedId:null}); window.scoutNativeGamepadUpdate([0,-1,0,0],[],true,"Xbox",2);');
+  assert.equal(h.run("pickGamepad()"),null);
+  assert.equal(h.node("#controllerSelect").value,"missing");
+});
+
+test("browser selection ignores other controllers and survives unrelated hotplug events", async()=>{
+  const h=harness();
+  const pads=[{index:0,id:"Xbox",connected:true,buttons:[],axes:[0,0,0,0]},
+    {index:1,id:"Selected pad",connected:true,buttons:[],axes:[0,0,0,0]}];
+  h.context.navigator.getGamepads=()=>pads;
+  h.run('bindEvents(); selectGamepad("1"); state.armed=true;');
+  assert.equal(h.run("pickGamepad().index"),1);
+  h.events.get("gamepaddisconnected")({gamepad:pads[0]});
+  assert.equal(h.run("state.armed"),true);
+  h.events.get("gamepadconnected")({gamepad:pads[0]});
+  assert.equal(h.run("pickGamepad().index"),1);
+  pads[1].connected=false;
+  h.events.get("gamepaddisconnected")({gamepad:pads[1]});
+  assert.equal(h.run("pickGamepad()"),null);
+  assert.equal(h.run("state.armed"),false);
+  await h.drain();
+});
+
+test("arming connects ROS once before enabling commands", async()=>{
+  const h=harness();
+  h.run('setArmed(false,{sendStop:false}); requestArm(); requestArm();');
+  assert.equal(h.run("state.armed"),false);
+  assert.equal(h.requests.length,1);
+  assert.equal(h.requests[0].url,"/api/ros/connect");
+  assert.equal(h.requests[0].payload.reconnect,false);
+  await h.drain();
+  assert.equal(h.run("state.armed"),true);
+});
+
+test("a new selected joystick input arms automatically but a held stick does not undo disarming", async()=>{
+  const h=harness();
+  h.run('setArmed(false,{sendStop:false}); window.scoutNativeGamepadUpdate([0,-0.8,0,0],[],true,"Mangmi",7); readGamepadVector();');
+  assert.equal(h.requests[0].url,"/api/ros/connect");
+  await h.drain();
+  assert.equal(h.run("state.armed"),true);
+  h.run('setArmed(false); readGamepadVector();');
+  await h.drain();
+  assert.equal(h.run("state.armed"),false);
+  assert.equal(h.requests.filter((request)=>request.url==="/api/ros/connect").length,1);
+  h.run('window.scoutNativeGamepadUpdate([0,0,0,0],[],true,"Mangmi",7); readGamepadVector(); window.scoutNativeGamepadUpdate([0,-0.8,0,0],[],true,"Mangmi",7); readGamepadVector();');
+  await h.drain();
+  assert.equal(h.run("state.armed"),true);
+});
+
+test("A auto-arms and waits for ROS before sending undock", async()=>{
+  const h=harness();
+  h.run('setArmed(false,{sendStop:false}); window.scoutNativeGamepadUpdate([0,0,0,0],[],true,"Mangmi",7); window.scoutNativeButton(0,7);');
+  assert.deepEqual(h.requests.map((request)=>request.url),["/api/ros/connect"]);
+  await h.drain();
+  assert.equal(h.run("state.armed"),true);
+  assert.equal(h.requests[1].payload.action,"undock");
+});
+
+test("canceling pending arming prevents delayed ROS success from enabling motion", async()=>{
+  const h=harness();
+  h.run('setArmed(false,{sendStop:false}); handleGamepadButton(0); toggleArmed();');
+  await h.drain();
+  assert.equal(h.run("state.armed"),false);
+  assert.ok(!h.requests.some((request)=>request.payload.action==="undock"));
+});
+
+test("ROS failure leaves control disarmed", async()=>{
+  const h=harness();
+  h.run('setArmed(false,{sendStop:false}); requestArm();');
+  h.requests[0].resolve({ok:false,error:"ROS unavailable"});
+  h.requests[0].resolved=true;
+  await h.drain();
+  assert.equal(h.run("state.armed"),false);
+  assert.equal(h.run("state.armPending"),false);
+});
+
+test("Android context menus and noneditable text selection are suppressed", ()=>{
+  const h=harness();
+  h.run('bindEvents(); state.android=true;');
+  let prevented=0;
+  h.events.get("contextmenu")({preventDefault:()=>prevented++});
+  h.events.get("selectstart")({target:{closest:()=>null},preventDefault:()=>prevented++});
+  assert.equal(prevented,2);
+  h.events.get("selectstart")({target:{closest:()=>({})},preventDefault:()=>prevented++});
+  assert.equal(prevented,2);
+});
+
+test("opening the controller menu prevents native buttons or axes from auto-arming", ()=>{
+  const h=harness();
+  h.run('setArmed(false,{sendStop:false}); state.controllerMenuOpen=true; window.scoutNativeGamepadUpdate([0,-1,0,0],[],true,"Mangmi",7); window.scoutNativeButton(0,7); window.scoutNativeInput(7); readGamepadVector();');
+  assert.equal(h.run("state.armed"),false);
+  assert.equal(h.requests.length,0);
 });

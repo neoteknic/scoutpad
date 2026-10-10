@@ -17,9 +17,11 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.JavascriptInterface
 import androidx.appcompat.app.AppCompatActivity
 import mobilebridge.Mobilebridge
 import org.json.JSONObject
+import org.json.JSONArray
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
@@ -27,9 +29,11 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     private lateinit var inputManager: InputManager
     private val axes = FloatArray(4)
     private val buttons = BooleanArray(16)
-    private var controllerId: Int? = null
+    private lateinit var controllerSelection: ControllerSelection
+    private val observedControllers = mutableSetOf<Int>()
     private var resumed = false
     private var awaitingNeutral = true
+    private var motionActive = false
     private var emitScheduled = false
     private var pageReady = false
     private val shutdownExecutor = Executors.newSingleThreadExecutor()
@@ -39,6 +43,9 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersiveMode()
+        controllerSelection = ControllerSelection(
+            getSharedPreferences("controller", Context.MODE_PRIVATE).getString("descriptor", null)
+        )
 
         val error = Mobilebridge.start("192.168.0.142")
 
@@ -52,6 +59,8 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             settings.loadWithOverviewMode = false
             setBackgroundColor(0xff07110f.toInt())
             webViewClient = AssetInterceptClient(this@MainActivity)
+            addJavascriptInterface(ControllerInterface(), "ScoutInput")
+            setOnLongClickListener { true }
         }
         setContentView(webView)
 
@@ -106,7 +115,6 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
         if (event.action == MotionEvent.ACTION_MOVE && isController(event.source)) {
             if (!resumed) return true
             val device = event.device ?: return super.dispatchGenericMotionEvent(event)
-            if (!selectController(device)) return true
             var leftX = centeredAxis(event, device, MotionEvent.AXIS_X)
             var leftY = centeredAxis(event, device, MotionEvent.AXIS_Y)
             var rightX = centeredAxis(event, device, MotionEvent.AXIS_Z)
@@ -118,6 +126,11 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             val hatY = centeredAxis(event, device, MotionEvent.AXIS_HAT_Y)
             if (leftX == 0f) leftX = hatX
             if (leftY == 0f) leftY = hatY
+
+            val activeInput = listOf(leftX, leftY, rightX, rightY).any { kotlin.math.abs(it) >= 0.15f }
+            if (!selectController(device, activeInput)) return true
+            if (activeInput && !motionActive) emitControllerInput(device.id)
+            motionActive = activeInput
 
             if (awaitingNeutral) {
                 if (listOf(leftX, leftY, rightX, rightY).all { kotlin.math.abs(it) < 0.15f }) awaitingNeutral = false
@@ -135,11 +148,13 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (!isController(event.source)) return super.dispatchKeyEvent(event)
+        if (!KeyEvent.isGamepadButton(event.keyCode) && event.keyCode !in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) return super.dispatchKeyEvent(event)
         if (!resumed) return true
         val device = event.device ?: return super.dispatchKeyEvent(event)
-        if (!selectController(device)) return true
+        if (!isController(event.source) && !KeyEvent.isGamepadButton(event.keyCode) && controllerDevices().none { it.id == device.id }) return super.dispatchKeyEvent(event)
         val pressed = event.action != KeyEvent.ACTION_UP
+        if (!selectController(device, pressed && event.repeatCount == 0)) return true
+        if (pressed && event.repeatCount == 0 && event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) emitControllerInput(device.id)
         if (awaitingNeutral && event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) {
             if (!pressed) awaitingNeutral = false
             return true
@@ -151,7 +166,7 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             KeyEvent.KEYCODE_DPAD_DOWN -> axes[1] = if (pressed) 1f else if (axes[1] > 0f) 0f else axes[1]
             else -> Unit
         }
-        if (event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT && isController(event.source)) {
+        if (event.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) {
             emitGamepadState()
             return true
         }
@@ -171,12 +186,12 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             KeyEvent.KEYCODE_BUTTON_THUMBR -> 11
             else -> -1
         }
-        if (buttonIndex >= 0 && isController(event.source)) {
+        if (buttonIndex >= 0) {
             val justPressed = pressed && !buttons[buttonIndex] && event.repeatCount == 0
             buttons[buttonIndex] = pressed
             emitGamepadState()
             if (justPressed && pageReady) {
-                webView.evaluateJavascript("window.scoutNativeButton && window.scoutNativeButton($buttonIndex);", null)
+                webView.evaluateJavascript("window.scoutNativeButton && window.scoutNativeButton($buttonIndex,${device.id});", null)
             }
             return true
         }
@@ -187,12 +202,7 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     override fun onInputDeviceChanged(deviceId: Int) { refreshController(); emitGamepadState() }
 
     override fun onInputDeviceRemoved(deviceId: Int) {
-        if (controllerId == deviceId) {
-            resetInputs()
-            controllerId = null
-            Mobilebridge.suspend(true)
-            Mobilebridge.suspend(!resumed)
-        }
+        observedControllers.remove(deviceId)
         refreshController()
         emitGamepadState()
     }
@@ -211,9 +221,9 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             if (!pageReady) return@postOnAnimation
             val axesJson = axes.joinToString(prefix = "[", postfix = "]") { it.toString() }
             val buttonsJson = buttons.joinToString(prefix = "[", postfix = "]") { it.toString() }
-            val device = controllerId?.let { InputDevice.getDevice(it) }
+            val device = controllerSelection.activeId?.let { InputDevice.getDevice(it) }
             webView.evaluateJavascript(
-                "window.scoutNativeGamepadUpdate && window.scoutNativeGamepadUpdate($axesJson,$buttonsJson,${device != null},${quoteJs(device?.name.orEmpty())});",
+                "window.scoutNativeGamepadUpdate && window.scoutNativeGamepadUpdate($axesJson,$buttonsJson,${device != null},${quoteJs(device?.name.orEmpty())},${device?.id ?: "null"});",
                 null
             )
         }
@@ -223,21 +233,77 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
         axes.fill(0f)
         buttons.fill(false)
         awaitingNeutral = true
+        motionActive = false
+    }
+
+    private fun emitControllerInput(deviceId: Int) {
+        if (pageReady) webView.evaluateJavascript("window.scoutNativeInput && window.scoutNativeInput($deviceId);", null)
     }
 
     private fun refreshController() {
-        if (controllerId?.let { InputDevice.getDevice(it) } != null) return
-        controllerId = InputDevice.getDeviceIds().firstOrNull { id ->
-            InputDevice.getDevice(id)?.let { device ->
-                device.supportsSource(InputDevice.SOURCE_GAMEPAD) || device.supportsSource(InputDevice.SOURCE_JOYSTICK)
-            } == true
-        }
+        val previousId = controllerSelection.activeId
+        controllerSelection.refresh(controllerDevices().map { ControllerDevice(it.id, it.descriptor) })
+        if (previousId != controllerSelection.activeId) resetController()
+        emitControllerList()
     }
 
-    private fun selectController(device: InputDevice): Boolean {
-        refreshController()
-        if (controllerId == null) controllerId = device.id
-        return controllerId == device.id
+    private fun selectController(device: InputDevice, activeInput: Boolean): Boolean {
+        if (observedControllers.add(device.id)) refreshController()
+        val previousId = controllerSelection.activeId
+        val accepted = controllerSelection.accepts(device.id, activeInput)
+        if (previousId != controllerSelection.activeId) {
+            resetInputs()
+            emitControllerList()
+            // Deliver a neutral state before the first real event from a newly detected controller.
+            if (pageReady) webView.evaluateJavascript(
+                "window.scoutNativeGamepadUpdate && window.scoutNativeGamepadUpdate([0,0,0,0],[],true,${quoteJs(device.name)},${device.id});", null
+            )
+        }
+        return accepted
+    }
+
+    private fun controllerDevices(): List<InputDevice> = InputDevice.getDeviceIds().toList().mapNotNull { InputDevice.getDevice(it) }
+        .filter { device ->
+            observedControllers.contains(device.id) || isController(device.sources) ||
+                device.hasKeys(KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BUTTON_START).any { it }
+        }
+
+    private fun resetController() {
+        resetInputs()
+        Mobilebridge.suspend(true)
+        Mobilebridge.suspend(!resumed)
+        if (pageReady) webView.evaluateJavascript("window.scoutNativeControllerChanged && window.scoutNativeControllerChanged();", null)
+        emitGamepadState()
+    }
+
+    private fun emitControllerList() {
+        if (!::webView.isInitialized || !pageReady) return
+        val devices = JSONArray()
+        controllerDevices().forEach { device ->
+            devices.put(JSONObject().put("id", device.id).put("name", device.name)
+                .put("descriptor", device.descriptor).put("virtual", device.isVirtual)
+                .put("analog", device.supportsSource(InputDevice.SOURCE_JOYSTICK)))
+        }
+        val preference = controllerSelection.preferredDescriptor
+        val selection = JSONObject().put("mode", if (preference == null) "auto" else "manual")
+            .put("activeId", controllerSelection.activeId ?: JSONObject.NULL)
+            .put("selectedId", if (preference == null) JSONObject.NULL else controllerSelection.activeId ?: JSONObject.NULL)
+        webView.evaluateJavascript("window.scoutNativeControllersUpdate && window.scoutNativeControllersUpdate($devices,$selection);", null)
+    }
+
+    inner class ControllerInterface {
+        @JavascriptInterface
+        fun refresh() { runOnUiThread { refreshController(); emitGamepadState() } }
+
+        @JavascriptInterface
+        fun select(value: String) { runOnUiThread {
+            val id = if (value == "auto") null else value.toIntOrNull() ?: return@runOnUiThread
+            if (!controllerSelection.choose(id)) return@runOnUiThread
+            getSharedPreferences("controller", Context.MODE_PRIVATE).edit()
+                .putString("descriptor", controllerSelection.preferredDescriptor).apply()
+            resetController()
+            emitControllerList()
+        } }
     }
 
     private fun emitLifecycle() {
@@ -270,8 +336,21 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
             activity.pageReady = true
             view?.evaluateJavascript("window.scoutAndroid = true; document.body.classList.add('android-console');", null)
             activity.emitGamepadState()
+            activity.emitControllerList()
             activity.emitLifecycle()
         }
+
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+            val uri = request?.url ?: return true
+            return !isLocalPage(uri)
+        }
+
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+        override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+            return !isLocalPage(Uri.parse(url ?: return true))
+        }
+
+        private fun isLocalPage(uri: Uri): Boolean = uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port == 18114
 
         override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
             Mobilebridge.suspend(true)
