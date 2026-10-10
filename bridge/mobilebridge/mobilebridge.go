@@ -15,6 +15,7 @@ import (
 	"github.com/aler9/goroslib"
 	"github.com/aler9/goroslib/pkg/msg"
 	"github.com/aler9/goroslib/pkg/msgs/geometry_msgs"
+	"github.com/aler9/goroslib/pkg/msgs/std_msgs"
 )
 
 const listenAddress = "127.0.0.1:18114"
@@ -93,6 +94,9 @@ type controller struct {
 	node              *goroslib.Node
 	pub               *goroslib.Publisher
 	forcePub          *goroslib.Publisher
+	cancelDetectPub   *goroslib.Publisher
+	homeSub           *goroslib.Subscriber
+	docking           bool
 	sub               *goroslib.Subscriber
 	robotIP           string
 	localIP           string
@@ -316,12 +320,31 @@ func (c *controller) connect(robotIP string) error {
 		c.setError(err)
 		return err
 	}
+	cancelDetectPub, err := goroslib.NewPublisher(goroslib.PublisherConf{Node: node, Topic: "/AppNode/cancel_detect", Msg: &std_msgs.Int32{}})
+	if err != nil {
+		sub.Close()
+		forcePub.Close()
+		pub.Close()
+		node.Close()
+		return err
+	}
+	homeSub, err := goroslib.NewSubscriber(goroslib.SubscriberConf{Node: node, Topic: "/CoreNode/going_home_status", Callback: c.onHomeStatus, QueueSize: 16})
+	if err != nil {
+		cancelDetectPub.Close()
+		sub.Close()
+		forcePub.Close()
+		pub.Close()
+		node.Close()
+		return err
+	}
 
 	c.mu.Lock()
 	c.node = node
 	c.pub = pub
 	c.forcePub = forcePub
 	c.sub = sub
+	c.cancelDetectPub = cancelDetectPub
+	c.homeSub = homeSub
 	c.robotIP = robotIP
 	c.localIP = localIP
 	c.connectedAt = time.Now()
@@ -346,6 +369,8 @@ func (c *controller) closeROS() {
 	c.setMotion("stop", 0, 0, 0, true)
 	c.mu.Lock()
 	sub, forcePub, pub, node := c.sub, c.forcePub, c.pub, c.node
+	homeSub, cancelDetectPub := c.homeSub, c.cancelDetectPub
+	c.homeSub, c.cancelDetectPub = nil, nil
 	c.sub, c.forcePub, c.pub, c.node = nil, nil, nil, nil
 	c.active = false
 	c.healthy = false
@@ -362,6 +387,12 @@ func (c *controller) closeROS() {
 	close(c.frameWait)
 	c.frameWait = make(chan struct{})
 	c.mu.Unlock()
+	if homeSub != nil {
+		homeSub.Close()
+	}
+	if cancelDetectPub != nil {
+		cancelDetectPub.Close()
+	}
 	if sub != nil {
 		sub.Close()
 	}
@@ -388,6 +419,17 @@ func (c *controller) onFrame(frame *frameMessage) {
 	close(c.frameWait)
 	c.frameWait = make(chan struct{})
 	c.mu.Unlock()
+}
+
+func (c *controller) onHomeStatus(status *std_msgs.Int32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch status.Data {
+	case 1, 2, 3, 8:
+		c.docking = true
+	case 4, 5, 6, 7:
+		c.docking = false
+	}
 }
 
 func (c *controller) runPublisher() {
@@ -496,43 +538,50 @@ func (c *controller) publishLocked(force bool, x, y, turn float64) {
 func (c *controller) cancelNavigation(ctx context.Context) error {
 	c.mu.Lock()
 	node := c.node
+	pub := c.cancelDetectPub
 	c.mu.Unlock()
-	if node == nil {
+	if node == nil || pub == nil {
 		return fmt.Errorf("ROS non connecte")
 	}
-	var lastError error
-	succeeded := false
+	return cancelNavigationSequence(ctx, func() {
+		pub.Write(&std_msgs.Int32{Data: 1})
+	}, c.callEmptyService)
+}
+
+// The charger search is a separate thread: nav_cancel alone never clears its flag.
+func cancelNavigationSequence(ctx context.Context, signal func(), call func(context.Context, string, interface{}) error) error {
+	for i := 0; i < 4; i++ {
+		signal()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	var failures []string
 	for _, spec := range []struct {
 		name string
 		srv  interface{}
 	}{
-		{"/CoreNode/nav_cancel", &coreNavCancelService{Request: emptyRequest{}}},
-		{"/NavPathNode/nav_cancel", &navPathCancelService{Request: emptyRequest{}}},
+		{"/NavPathNode/nav_cancel", &navPathCancelService{}},
+		{"/CoreNode/nav_cancel", &coreNavCancelService{}},
 	} {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		client, err := goroslib.NewServiceClient(goroslib.ServiceClientConf{Node: node, Name: spec.name, Srv: spec.srv})
-		if err != nil {
-			c.setError(err)
-			lastError = err
-			continue
-		}
+		signal()
 		callCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
-		err = client.CallContext(callCtx, &emptyRequest{}, &emptyResponse{})
+		err := call(callCtx, spec.name, spec.srv)
 		cancel()
-		client.Close()
 		if err != nil {
-			c.setError(err)
-			lastError = err
-		} else {
-			succeeded = true
+			failures = append(failures, spec.name+": "+err.Error())
 		}
 	}
-	if succeeded {
-		return nil
+	signal()
+	if len(failures) != 0 {
+		return fmt.Errorf("annulation incomplete: %s", strings.Join(failures, "; "))
 	}
-	return lastError
+	return nil
 }
 
 func (c *controller) goHome(ctx context.Context) error {
@@ -662,6 +711,7 @@ func (c *controller) handleCommand(w http.ResponseWriter, r *http.Request) {
 		action = "drive"
 	}
 	var err error
+	feedback := ""
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
 	switch action {
@@ -676,7 +726,13 @@ func (c *controller) handleCommand(w http.ResponseWriter, r *http.Request) {
 		}
 		c.setCommandMotion(&req, "stop", 0, 0, 0, true)
 		err = c.goHome(operation)
-	case "undock":
+		if err == nil {
+			c.mu.Lock()
+			c.docking = true
+			c.mu.Unlock()
+			feedback = "dock"
+		}
+	case "undock", "cancelDock":
 		operation, release := c.beginAction(ctx)
 		defer release()
 		c.actionMu.Lock()
@@ -686,8 +742,23 @@ func (c *controller) handleCommand(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		c.setCommandMotion(&req, "cancelNav", 0, 0, 0, true)
+		c.mu.Lock()
+		wasDocking := c.docking
+		c.mu.Unlock()
 		err = c.cancelNavigation(operation)
 		if err != nil {
+			break
+		}
+		if operation.Err() != nil || !c.commandCurrent(req) {
+			err = context.Canceled
+			break
+		}
+		c.mu.Lock()
+		c.docking = false
+		c.mu.Unlock()
+		if wasDocking || action == "cancelDock" {
+			c.setCommandMotion(&req, "stop", 0, 0, 0, true)
+			feedback = "cancelDock"
 			break
 		}
 		if operation.Err() != nil || !c.commandCurrent(req) {
@@ -723,7 +794,7 @@ func (c *controller) handleCommand(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	c.lastError = ""
 	c.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "simulated": false, "protocol": "ros", "responseStatus": 200, "responseText": "android " + action})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "simulated": false, "protocol": "ros", "responseStatus": 200, "responseText": c.platform + " " + action, "feedback": feedback})
 }
 
 func (c *controller) handleCamera(w http.ResponseWriter, r *http.Request) {
@@ -812,6 +883,7 @@ func (c *controller) statusObjects() (map[string]interface{}, map[string]interfa
 		"localHost": c.localIP, "commandTopic": "/cmd_vel", "framePublishers": boolInt(connected),
 		"lastFrameAt": lastFrameAt, "lastError": c.lastError,
 		"reconnectAttempts": c.reconnectAttempts,
+		"docking":           c.docking,
 	}
 	bridge := map[string]interface{}{
 		"running": connected, "url": "http://" + listenAddress, "lastError": c.lastError,

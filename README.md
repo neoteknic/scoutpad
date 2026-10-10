@@ -2,16 +2,23 @@
 
 Petit site local en JavaScript pour piloter un Moorebot Scout depuis un navigateur avec la Gamepad API, des boutons clavier/souris et un panneau video central.
 
-## Applications 1.1.1
+## Applications 1.1.2
 
 Les binaires sont disponibles dans les [releases GitHub](https://github.com/neoteknic/scoutpad/releases).
 
-- Android : installer `ScoutPad-Android-1.1.1.apk`. Le pont ROS est inclus.
+- Android : installer `ScoutPad-Android-1.1.2.apk`. Le pont ROS est inclus.
 - Windows x64 : extraire `ScoutPad-Windows-x64.zip`, puis ouvrir `ScoutPad.exe`. Le pont ROS est inclus ; aucun Node ou Go a installer. L'icone de notification permet d'arreter le serveur.
 - Windows utilise .NET Framework 4.8 et ouvre l'interface dans le navigateur par defaut, a `http://127.0.0.1:18114/`.
 - Si Windows bloque TCPROS, lancer `Setup-Firewall.ps1` en administrateur sur un reseau prive.
 
 Les applications Android et Windows partagent le meme backend dans `bridge/mobilebridge`. La version Node ci-dessous reste disponible pour les endpoints HTTP personnalises et le proxy RTSP.
+
+### Changements 1.1.2
+
+- Annulation complete du retour : signal `/AppNode/cancel_detect` puis annulation NavPathNode et CoreNode. Les deux services doivent repondre sans erreur.
+- A / Espace interrompt le retour en attente ou en cours, sans faire avancer le robot. Hors retour, A conserve la sortie de base.
+- Deux sons distincts apres acquittement : retour demande et retour annule. Son natif Android sur le volume multimedia ; navigateur, cliquer une fois dans la page pour autoriser l'audio.
+- Etat du retour suivi via `/CoreNode/going_home_status`. Les commandes manuelles attendent l'annulation du retour.
 
 ### Changements 1.1.1
 

@@ -18,7 +18,7 @@ const ffmpegPath = process.env.FFMPEG_PATH || ffmpegInstaller.path || "ffmpeg";
 const bridgePath = process.env.SCOUT_BRIDGE_PATH || resolve(root, ".runtime", "scout-bridge.exe");
 const bridgeListen = process.env.SCOUT_BRIDGE_LISTEN || "127.0.0.1:18114";
 const bridgeUrl = `http://${bridgeListen}`;
-const minClientVersion = 7;
+const minClientVersion = 10;
 const rosClient = new RosScoutClient();
 
 let recentCommands = [];
@@ -236,14 +236,12 @@ async function relayRosCommand(body) {
 
   if (values.action === "dock") {
     const bridge = await sendBridgeCommand({ action: "dock" });
-    return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action || "nav_low_bat" };
+    return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action || "nav_low_bat", feedback: bridge.feedback };
   }
 
-  if (values.action === "undock") {
-    await sendBridgeCommand({ action: "cancelNav" });
-    await delay(80);
-    await sendBridgeCommand({ action: "forceDrive", x: 0, y: Math.max(0.3, Number(body.speed || 0.45)), turn: 0, durationMs: 1800 });
-    return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: "bridge undock/cancel dock" };
+  if (["undock", "cancelDock"].includes(values.action)) {
+    const bridge = await sendBridgeCommand({ action: values.action, y: Math.max(0.3, Math.min(1, Number(body.speed || 0.45))) });
+    return { ok: true, simulated: false, protocol: "ros", command, responseStatus: 200, responseText: bridge.action, feedback: bridge.feedback };
   }
 
   if (values.action === "lightLow") {

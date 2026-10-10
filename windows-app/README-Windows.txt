@@ -1,4 +1,4 @@
-ScoutPad 1.1.1 - Windows x64 portable
+ScoutPad 1.1.2 - Windows x64 portable
 
 Extraire toute l'archive puis ouvrir ScoutPad.exe.
 L'interface s'ouvre dans le navigateur par defaut. Le serveur et le pont ROS sont inclus.
@@ -7,6 +7,8 @@ Le PC et le robot doivent etre sur le meme reseau. IP par defaut : 192.168.0.142
 Si les commandes ROS ne passent pas, executer Setup-Firewall.ps1 dans PowerShell administrateur.
 
 A : sortie / annulation retour base. B : retour base. Start : armer / desarmer.
+A pendant le retour l'annule sans lancer la sortie de base.
+Deux sons confirment le retour et son annulation. Cliquer une fois dans l'interface pour autoriser le son du navigateur.
 LB : video on/off. RB : plein ecran.
 Stick gauche : avance/recul et rotation. Stick droit horizontal : translation.
 Clavier : fleches pour le mouvement, Q/S pour la rotation, Espace pour sortir, B pour rentrer.

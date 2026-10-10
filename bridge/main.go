@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/aler9/goroslib"
 	"github.com/aler9/goroslib/pkg/msg"
 	"github.com/aler9/goroslib/pkg/msgs/geometry_msgs"
+	"github.com/aler9/goroslib/pkg/msgs/std_msgs"
 )
 
 type goHomeRequest struct{}
@@ -59,21 +61,24 @@ type commandRequest struct {
 }
 
 type bridgeServer struct {
-	node       *goroslib.Node
-	pub        *goroslib.Publisher
-	forcePub   *goroslib.Publisher
-	topic      string
-	startedAt  time.Time
-	lastAction string
-	lastError  string
-	targetX    float64
-	targetY    float64
-	targetTurn float64
-	targetAt   time.Time
-	active     bool
-	seq        uint64
-	mu         sync.Mutex
-	writeMu    sync.Mutex
+	node            *goroslib.Node
+	pub             *goroslib.Publisher
+	forcePub        *goroslib.Publisher
+	cancelDetectPub *goroslib.Publisher
+	docking         bool
+	actionMu        sync.Mutex
+	topic           string
+	startedAt       time.Time
+	lastAction      string
+	lastError       string
+	targetX         float64
+	targetY         float64
+	targetTurn      float64
+	targetAt        time.Time
+	active          bool
+	seq             uint64
+	mu              sync.Mutex
+	writeMu         sync.Mutex
 }
 
 func main() {
@@ -120,15 +125,35 @@ func main() {
 		fail(err)
 	}
 	defer forcePub.Close()
+	cancelDetectPub, err := goroslib.NewPublisher(goroslib.PublisherConf{Node: n, Topic: "/AppNode/cancel_detect", Msg: &std_msgs.Int32{}})
+	if err != nil {
+		fail(err)
+	}
+	defer cancelDetectPub.Close()
 
 	s := &bridgeServer{
-		node:      n,
-		pub:       pub,
-		forcePub:  forcePub,
-		topic:     *topic,
-		startedAt: time.Now(),
-		targetAt:  time.Now(),
+		node:            n,
+		pub:             pub,
+		forcePub:        forcePub,
+		cancelDetectPub: cancelDetectPub,
+		topic:           *topic,
+		startedAt:       time.Now(),
+		targetAt:        time.Now(),
 	}
+	homeSub, err := goroslib.NewSubscriber(goroslib.SubscriberConf{Node: n, Topic: "/CoreNode/going_home_status", Callback: func(status *std_msgs.Int32) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		switch status.Data {
+		case 1, 2, 3, 8:
+			s.docking = true
+		case 4, 5, 6, 7:
+			s.docking = false
+		}
+	}, QueueSize: 16})
+	if err != nil {
+		fail(err)
+	}
+	defer homeSub.Close()
 	go s.runPublisher()
 
 	mux := http.NewServeMux()
@@ -147,6 +172,7 @@ func (s *bridgeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	lastAction := s.lastAction
 	lastError := s.lastError
 	active := s.active
+	docking := s.docking
 	target := map[string]float64{"x": s.targetX, "y": s.targetY, "turn": s.targetTurn}
 	s.mu.Unlock()
 
@@ -157,6 +183,7 @@ func (s *bridgeServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"lastAction":  lastAction,
 		"lastError":   lastError,
 		"active":      active,
+		"docking":     docking,
 		"target":      target,
 		"targetAgeMs": targetAgeMs,
 	})
@@ -179,13 +206,38 @@ func (s *bridgeServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var err error
+	feedback := ""
 	switch req.Action {
 	case "dock":
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
 		s.setMotion("stop", 0, 0, 0)
-		go s.callGoHomeAsync()
-	case "cancelNav":
+		err = callGoHome(s.node)
+		if err == nil {
+			s.mu.Lock()
+			s.docking = true
+			s.mu.Unlock()
+			feedback = "dock"
+		}
+	case "cancelNav", "cancelDock", "undock":
+		s.actionMu.Lock()
+		defer s.actionMu.Unlock()
+		s.mu.Lock()
+		wasDocking := s.docking
+		s.mu.Unlock()
 		s.setForceMotion("stop", 0, 0, 0)
-		go s.cancelNavigation()
+		err = s.cancelNavigation()
+		if err == nil {
+			s.mu.Lock()
+			s.docking = false
+			s.mu.Unlock()
+			if req.Action == "cancelDock" || wasDocking {
+				feedback = "cancelDock"
+			} else if req.Action == "undock" {
+				seq := s.setForceMotion("undock", 0, req.Y, 0)
+				time.AfterFunc(1800*time.Millisecond, func() { s.stopIfCurrent(seq) })
+			}
+		}
 	case "forceDrive":
 		seq := s.setForceMotion("drive", req.X, req.Y, req.Turn)
 		if req.DurationMs > 0 {
@@ -221,7 +273,7 @@ func (s *bridgeServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	s.lastAction = req.Action
 	s.lastError = ""
 	s.mu.Unlock()
-	sendJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action})
+	sendJSON(w, http.StatusOK, map[string]any{"ok": true, "action": req.Action, "feedback": feedback})
 }
 
 func (s *bridgeServer) callGoHomeAsync() {
@@ -232,14 +284,23 @@ func (s *bridgeServer) callGoHomeAsync() {
 	}
 }
 
-func (s *bridgeServer) cancelNavigation() {
-	for _, call := range []func(*goroslib.Node) error{callCoreNavCancel, callNavPathCancel} {
+func (s *bridgeServer) cancelNavigation() error {
+	// Stop the separate charger-search thread before cancelling path and alignment.
+	for i := 0; i < 4; i++ {
+		s.cancelDetectPub.Write(&std_msgs.Int32{Data: 1})
+		time.Sleep(100 * time.Millisecond)
+	}
+	var firstError error
+	for _, call := range []func(*goroslib.Node) error{callNavPathCancel, callCoreNavCancel} {
+		s.cancelDetectPub.Write(&std_msgs.Int32{Data: 1})
 		if err := call(s.node); err != nil {
-			s.mu.Lock()
-			s.lastError = err.Error()
-			s.mu.Unlock()
+			if firstError == nil {
+				firstError = err
+			}
 		}
 	}
+	s.cancelDetectPub.Write(&std_msgs.Int32{Data: 1})
+	return firstError
 }
 
 func (s *bridgeServer) runPublisher() {
@@ -346,7 +407,9 @@ func callGoHome(n *goroslib.Node) error {
 		return err
 	}
 	defer cl.Close()
-	return cl.Call(&goHomeRequest{}, &goHomeResponse{})
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	return cl.CallContext(ctx, &goHomeRequest{}, &goHomeResponse{})
 }
 
 func callLight(n *goroslib.Node, cmd int32) error {
@@ -372,7 +435,9 @@ func callCoreNavCancel(n *goroslib.Node) error {
 		return err
 	}
 	defer cl.Close()
-	return cl.Call(&navCancelRequest{}, &navCancelResponse{})
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	return cl.CallContext(ctx, &navCancelRequest{}, &navCancelResponse{})
 }
 
 func callNavPathCancel(n *goroslib.Node) error {
@@ -385,7 +450,9 @@ func callNavPathCancel(n *goroslib.Node) error {
 		return err
 	}
 	defer cl.Close()
-	return cl.Call(&navCancelRequest{}, &navCancelResponse{})
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	return cl.CallContext(ctx, &navCancelRequest{}, &navCancelResponse{})
 }
 
 func sendJSON(w http.ResponseWriter, status int, data any) {

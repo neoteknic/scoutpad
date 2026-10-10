@@ -4,13 +4,149 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aler9/goroslib"
+	"github.com/aler9/goroslib/pkg/msgs/geometry_msgs"
+	"github.com/aler9/goroslib/pkg/msgs/std_msgs"
 )
+
+func TestCancelNavigationStopsSearchBeforeBothServices(t *testing.T) {
+	var events []string
+	err := cancelNavigationSequence(context.Background(), func() { events = append(events, "signal") },
+		func(_ context.Context, name string, _ interface{}) error { events = append(events, name); return nil })
+	if err != nil || len(events) != 9 || events[5] != "/NavPathNode/nav_cancel" || events[7] != "/CoreNode/nav_cancel" {
+		t.Fatalf("incomplete cancellation sequence: %v, %v", events, err)
+	}
+}
+
+func TestCancelNavigationRejectsPartialSuccess(t *testing.T) {
+	for _, failed := range []string{"/NavPathNode/nav_cancel", "/CoreNode/nav_cancel"} {
+		err := cancelNavigationSequence(context.Background(), func() {}, func(_ context.Context, name string, _ interface{}) error {
+			if name == failed {
+				return fmt.Errorf("unavailable")
+			}
+			return nil
+		})
+		if err == nil {
+			t.Fatal("partial cancellation must not report success")
+		}
+	}
+}
+
+func TestCancelNavigationRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := cancelNavigationSequence(ctx, func() {}, func(context.Context, string, interface{}) error {
+		t.Fatal("called service after cancellation")
+		return nil
+	})
+	if err != context.Canceled {
+		t.Fatal(err)
+	}
+}
+
+func TestHomeStatusTracksAllReturnPhases(t *testing.T) {
+	c := testController(t)
+	for _, status := range []int32{1, 2, 3, 8, 4, 5, 6, 7} {
+		c.onHomeStatus(&std_msgs.Int32{Data: status})
+		want := status < 4 || status == 8
+		if c.docking != want {
+			t.Fatalf("status %d: docking=%v", status, c.docking)
+		}
+	}
+}
+
+// Opt-in hardware test: starts a short return and cancels it, then watches for resumed motion.
+func TestRobotReturnCancellation(t *testing.T) {
+	ip := os.Getenv("SCOUT_TEST_ROBOT")
+	if ip == "" {
+		t.Skip("requires explicit permission and SCOUT_TEST_ROBOT")
+	}
+	installRobotResolver(ip)
+	c := newController(ip)
+	defer c.cancel()
+	node, err := goroslib.NewNode(goroslib.NodeConf{Name: "scoutpad_cancel_test", MasterAddress: ip + ":11311", Host: chooseLocalIP(ip), TcprosPort: 18116})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	pub, err := goroslib.NewPublisher(goroslib.PublisherConf{Node: node, Topic: "/AppNode/cancel_detect", Msg: &std_msgs.Int32{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+	c.node, c.cancelDetectPub, c.healthy = node, pub, true
+	home, err := goroslib.NewSubscriber(goroslib.SubscriberConf{Node: node, Topic: "/CoreNode/going_home_status", Callback: func(s *std_msgs.Int32) { t.Logf("robot return status: %d", s.Data); c.onHomeStatus(s) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer home.Close()
+	var motionMu sync.Mutex
+	var lastMoving time.Time
+	motion, err := goroslib.NewSubscriber(goroslib.SubscriberConf{Node: node, Topic: "/cmd_vel", Callback: func(v *geometry_msgs.Twist) {
+		if v.Linear.X != 0 || v.Linear.Y != 0 || v.Angular.Z != 0 {
+			motionMu.Lock()
+			lastMoving = time.Now()
+			motionMu.Unlock()
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer motion.Close()
+	time.Sleep(time.Second)
+	baseline, stopBaseline := context.WithTimeout(context.Background(), 4*time.Second)
+	err = c.cancelNavigation(baseline)
+	stopBaseline()
+	if err != nil {
+		t.Fatal("initial safe cancellation: ", err)
+	}
+	time.Sleep(time.Second)
+	invoke := func(action string, seq uint64) map[string]interface{} {
+		body, _ := json.Marshal(commandRequest{RobotIP: ip, Action: action, ClientID: "hardware-test", CommandSeq: seq})
+		response := httptest.NewRecorder()
+		c.handleCommand(response, httptest.NewRequest(http.MethodPost, "/api/command", bytes.NewReader(body)))
+		var result map[string]interface{}
+		json.Unmarshal(response.Body.Bytes(), &result)
+		if response.Code != 200 {
+			t.Fatalf("%s failed: %s", action, response.Body.String())
+		}
+		return result
+	}
+	// Always try cancellation, even if an assertion after docking fails.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		c.cancelNavigation(ctx)
+	}()
+	if result := invoke("dock", 1); result["feedback"] != "dock" {
+		t.Fatal(result)
+	}
+	time.Sleep(2 * time.Second)
+	if result := invoke("cancelDock", 2); result["feedback"] != "cancelDock" {
+		t.Fatal(result)
+	}
+	if c.active {
+		t.Fatal("cancellation started an undock motion")
+	}
+	settled := time.Now().Add(time.Second)
+	time.Sleep(11 * time.Second)
+	motionMu.Lock()
+	movingAt := lastMoving
+	motionMu.Unlock()
+	if movingAt.After(settled) {
+		t.Fatalf("robot resumed motion after cancellation at %v", movingAt)
+	}
+	t.Log("no autonomous motion during the 10-second observation after cancellation")
+}
 
 func testController(t *testing.T) *controller {
 	t.Helper()

@@ -71,6 +71,51 @@ test("stop discards queued actions and movement", async()=>{
   assert.ok(h.requests[1].payload.commandSeq>h.requests[0].payload.commandSeq);
 });
 
+test("A preempts B and sends cancellation without forward motion", async()=>{
+  const h=harness();
+  h.run('handleGamepadButton(1); handleGamepadButton(0)');
+  await new Promise(setImmediate);
+  assert.equal(h.requests[0].payload.action,"dock");
+  assert.equal(h.requests[0].signal.aborted,true);
+  assert.equal(h.requests[1].payload.action,"cancelDock");
+  assert.equal(h.requests[1].payload.y,-0.45);
+  // The cancel action, not its unused vector, determines whether motors can move.
+  await h.drain();
+  assert.ok(!h.requests.some((r)=>r.payload.action==="undock"));
+});
+
+test("navigation sounds play only after a successful current acknowledgement", async()=>{
+  const h=harness();
+  const sounds=[];
+  h.context.window.ScoutInput={feedback:(event)=>sounds.push(event)};
+  h.run('handleGamepadButton(1)');
+  assert.deepEqual(sounds,[]);
+  h.requests[0].resolve({ok:true,feedback:"dock"}); h.requests[0].resolved=true;
+  await new Promise(setImmediate);
+  assert.deepEqual(sounds,["dock"]);
+  h.run('handleGamepadButton(0)');
+  h.requests[1].resolve({ok:true,feedback:"cancelDock"}); h.requests[1].resolved=true;
+  await h.drain();
+  assert.deepEqual(sounds,["dock","cancelDock"]);
+  assert.equal(h.run("state.returnRequested"),false);
+  h.run('handleGamepadButton(1)');
+  h.requests[2].resolve({ok:false,error:"offline",feedback:"dock"}); h.requests[2].resolved=true;
+  await h.drain();
+  assert.deepEqual(sounds,["dock","cancelDock"]);
+});
+
+test("late dock acknowledgements cannot restore return mode or play a sound", async()=>{
+  const h=harness();
+  const sounds=[];
+  h.context.window.ScoutInput={feedback:(event)=>sounds.push(event)};
+  h.run('handleGamepadButton(1)');
+  h.requests[0].resolve({ok:true,feedback:"dock"}); h.requests[0].resolved=true;
+  h.run('handleGamepadButton(0)');
+  await new Promise(setImmediate);
+  assert.deepEqual(sounds,[]);
+  await h.drain();
+});
+
 test("hung requests release the queue on timeout", async()=>{
   const h=harness({timeoutImmediately:true});
   h.run('sendCommand("drive",{x:0,y:-1,turn:0},true); sendCommand("lightHigh",{x:0,y:0,turn:0},true);');

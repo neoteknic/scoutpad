@@ -1,4 +1,4 @@
-const CLIENT_VERSION = 9;
+const CLIENT_VERSION = 10;
 
 const state = {
   armed: false,
@@ -35,6 +35,8 @@ const state = {
   awaitingNeutral: false,
   manualVector: null,
   navigationBusy: false,
+  returnRequested: false,
+  audioContext: null,
   videoStartedAt: 0,
   videoRetryAt: 0,
   videoRetryCount: 0,
@@ -192,6 +194,7 @@ function commandLabel(action) {
   const labels = {
     undock: "sortir / annuler retour base",
     dock: "retour base",
+    cancelDock: "annuler retour base",
     photo: "photo",
     recordStart: "demarrer l'enregistrement",
     recordStop: "arreter l'enregistrement",
@@ -457,6 +460,7 @@ function renderVector(vector) {
 }
 
 async function sendCommand(action, vector = state.lastVector, force = false) {
+  if (action === "undock" && state.returnRequested) action = "cancelDock";
   const settings = getSettings();
   const scaled = {
     x: clamp(vector.x) * settings.strafeSpeed,
@@ -469,7 +473,7 @@ async function sendCommand(action, vector = state.lastVector, force = false) {
   if (isIdleDrive && state.idleSent && !force) return;
 
   if (action !== "stop" && (state.suspended || document.hidden)) return;
-  if (action === "drive" && state.navigationBusy) return;
+  if (action === "drive" && (state.navigationBusy || state.returnRequested)) return;
 
   if (!state.armed && action !== "stop" && !settings.simulation) {
     if (force || action !== "drive") {
@@ -509,7 +513,14 @@ async function sendCommand(action, vector = state.lastVector, force = false) {
 function queueCommand(command) {
   command.payload.clientId = state.clientId;
   command.payload.commandSeq = ++state.commandSequence;
-  if (command.action === "stop") {
+  if (command.action === "cancelDock") {
+    state.pendingDrive = null;
+    state.actionQueue.length = 0;
+    state.actionQueue.unshift(command);
+    state.navigationBusy = true;
+    state.idleSent = true;
+    state.activeRequest?.abort();
+  } else if (command.action === "stop") {
     state.pendingDrive = null;
     state.actionQueue.length = 0;
     state.actionQueue.unshift(command);
@@ -522,6 +533,7 @@ function queueCommand(command) {
       state.navigationBusy = true;
       state.idleSent = true;
     }
+    if (command.action === "dock") state.returnRequested = true;
     state.actionQueue.push(command);
   }
   flushCommandQueue();
@@ -550,6 +562,11 @@ async function flushCommandQueue() {
     state.commandLatencyMs = Math.round(performance.now() - startedAt);
     elements.commandLatency.textContent = `${state.commandLatencyMs} ms`;
     const mode = data.simulated ? "simulation" : `${data.protocol === "ros" ? "ROS" : "HTTP"} ${data.responseStatus}`;
+    if (data.ok && !data.simulated && command.payload.commandSeq === state.commandSequence) {
+      if (data.feedback === "dock") state.returnRequested = true;
+      if (data.feedback === "cancelDock") state.returnRequested = false;
+      playNavigationFeedback(data.feedback);
+    }
     if (data.ok && (command.force || command.action !== "drive")) {
       log("Commande envoyee", `${commandLabel(command.action)} | ${mode}`);
     } else if (!data.ok) {
@@ -557,7 +574,7 @@ async function flushCommandQueue() {
       log("Commande refusee", detail);
     }
   } catch (error) {
-    if (error.name !== "AbortError" || state.actionQueue[0]?.action !== "stop") {
+    if (error.name !== "AbortError" || !["stop", "cancelDock"].includes(state.actionQueue[0]?.action)) {
       log("Erreur commande", error.name === "AbortError" ? "Delai depasse" : error.message);
     }
     if (command.action === "drive") state.idleSent = false;
@@ -565,7 +582,7 @@ async function flushCommandQueue() {
     clearTimeout(timeout);
     state.activeRequest = null;
     state.commandInFlight = false;
-    state.navigationBusy = state.actionQueue.some((item) => item.action === "dock" || item.action === "undock");
+    state.navigationBusy = state.actionQueue.some((item) => ["dock", "undock", "cancelDock"].includes(item.action));
     if (state.actionQueue.length || state.pendingDrive) flushCommandQueue();
   }
 }
@@ -607,6 +624,39 @@ function readGamepadVector() {
   return { x: rightX, y: leftY, turn: leftX };
 }
 
+function unlockFeedbackAudio() {
+  if (window.ScoutInput?.feedback) return;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  try {
+    state.audioContext ||= new AudioContext();
+    state.audioContext.resume().catch(() => {});
+  } catch { /* Audio may be disabled by the browser. */ }
+}
+
+function playNavigationFeedback(event) {
+  if (!["dock", "cancelDock"].includes(event)) return;
+  if (window.ScoutInput?.feedback) { window.ScoutInput.feedback(event); return; }
+  unlockFeedbackAudio();
+  const audio = state.audioContext;
+  if (!audio || audio.state !== "running") return;
+  const notes = event === "dock" ? [440, 660, 880] : [880, 660, 440];
+  notes.forEach((frequency, index) => {
+    const start = audio.currentTime + index * 0.13;
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.frequency.value = frequency;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(0.15, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.11);
+    oscillator.connect(gain);
+    gain.connect(audio.destination);
+    oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+    oscillator.start(start);
+    oscillator.stop(start + 0.12);
+  });
+}
+
 function handleGamepadButton(index) {
   if (index === 9) { toggleArmed(); return; }
   if (index === 4) toggleVideo();
@@ -636,6 +686,8 @@ async function refreshRosStatus() {
   const network = status?.network;
   const ros = status?.ros;
   const bridge = status?.bridge;
+  const docking = ros?.docking ?? bridge?.status?.docking;
+  if (!state.navigationBusy && typeof docking === "boolean") state.returnRequested = docking;
   const frameAge = ros?.lastFrameAt ? Math.max(0, Date.now() - ros.lastFrameAt) : null;
   elements.frameAge.textContent = frameAge === null ? "--" : `${(frameAge / 1000).toFixed(1)} s`;
   if (state.videoEnabled && getSettings().videoUrl.includes("/api/ros/camera.mjpg")) {
@@ -868,6 +920,7 @@ async function waitForHlsReady(hlsUrl) {
 
 function bindEvents() {
   window.addEventListener("pointerdown", () => {
+    unlockFeedbackAudio();
     if (!pickGamepad()) return;
     const pad = pickGamepad();
     setGamepadStatus("Manette active", `${pad.id}\nA sortie/annule | B base | Start armer | L1 video | R1 plein ecran`, true);
@@ -932,6 +985,7 @@ function bindEvents() {
   });
 
   window.addEventListener("keydown", (event) => {
+    unlockFeedbackAudio();
     pickGamepad();
     if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
 

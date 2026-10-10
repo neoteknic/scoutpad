@@ -3,6 +3,8 @@ package com.neote.moorebotscout
 import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.input.InputManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
 import android.view.InputDevice
@@ -36,6 +38,7 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     private var motionActive = false
     private var emitScheduled = false
     private var pageReady = false
+    private var feedbackTone: ToneGenerator? = null
     private val shutdownExecutor = Executors.newSingleThreadExecutor()
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -104,6 +107,8 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     }
 
     override fun onDestroy() {
+        feedbackTone?.release()
+        feedbackTone = null
         if (::inputManager.isInitialized) inputManager.unregisterInputDeviceListener(this)
         shutdownExecutor.execute { Mobilebridge.stop() }
         shutdownExecutor.shutdown()
@@ -292,6 +297,20 @@ class MainActivity : AppCompatActivity(), InputManager.InputDeviceListener {
     }
 
     inner class ControllerInterface {
+        @JavascriptInterface
+        fun feedback(event: String) { runOnUiThread {
+            if (!resumed) return@runOnUiThread
+            val tone = when (event) {
+                "dock" -> ToneGenerator.TONE_PROP_ACK
+                "cancelDock" -> ToneGenerator.TONE_PROP_NACK
+                else -> return@runOnUiThread
+            }
+            try {
+                if (feedbackTone == null) feedbackTone = ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+                feedbackTone?.startTone(tone, 350)
+            } catch (_: RuntimeException) { /* Audio feedback must not interrupt controls. */ }
+        } }
+
         @JavascriptInterface
         fun refresh() { runOnUiThread { refreshController(); emitGamepadState() } }
 
