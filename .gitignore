@@ -5,6 +5,7 @@ npm-debug.log*
 android-app/.gradle/
 android-app/app/build/
 android-app/app/libs/*.aar
+android-app/app/libs/*.jar
 android-app/app/src/main/assets/vendor/
 dist/
 *.apk

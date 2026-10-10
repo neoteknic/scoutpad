@@ -161,7 +161,9 @@ func start(robotIP string, assetsDirectory string) string {
 	}
 	appControl = newController(defaultIP)
 	appControl.platform = "android"
-	if assetsDirectory != "" { appControl.platform = "windows" }
+	if assetsDirectory != "" {
+		appControl.platform = "windows"
+	}
 	appOwners = 1
 	control := appControl
 	control.workers.Add(2)
@@ -577,7 +579,7 @@ func (c *controller) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok": true, "defaultRobotIp": robotIP, "ffmpegAvailable": false,
 		"network": map[string]interface{}{"robotIp": robotIP, "rosMaster": probeROS(robotIP)},
-		"ros": ros, "bridge": bridge, "native": true, "android": c.platform == "android", "platform": c.platform,
+		"ros":     ros, "bridge": bridge, "native": true, "android": c.platform == "android", "platform": c.platform,
 	})
 }
 
@@ -732,6 +734,10 @@ func (c *controller) handleCamera(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	c.streamCamera(w, r)
+}
+
+func (c *controller) streamCamera(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	c.cameraClients++
 	c.mu.Unlock()

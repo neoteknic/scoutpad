@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -158,5 +159,40 @@ func TestHTTPStopAndStaleDrive(t *testing.T) {
 	}
 	if invoke(commandRequest{ClientID: "test", CommandSeq: 1, Action: "drive", Y: -1}).Code != http.StatusConflict {
 		t.Fatal("stale command was not rejected before connecting")
+	}
+}
+
+func TestCameraStreamClosesWhenBackendStops(t *testing.T) {
+	c := testController(t)
+	c.onFrame(&frameMessage{Type: 1, Data: []byte{0xff, 0xd8, 0xff, 0xd9}})
+	finished := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(finished)
+		c.streamCamera(w, r)
+	}))
+	defer server.Close()
+	client := &http.Client{Timeout: time.Second}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.Header.Get("Content-Type") != "multipart/x-mixed-replace; boundary=scoutframe" {
+		t.Fatal("invalid stream content type")
+	}
+	data := make([]byte, 10)
+	if _, err = io.ReadFull(response.Body, data); err != nil {
+		t.Fatal(err)
+	}
+	c.cancel()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("stream survived backend stop")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cameraClients != 0 {
+		t.Fatal("stream reader leaked")
 	}
 }
