@@ -4,9 +4,9 @@ import { pcm16, wav, validateImport } from "../public/soundboard-audio.js";
 import { encodePCM } from "../audio-server.js";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 
-test("PCM attenuates, clamps and replaces nonfinite samples", () => {
+test("PCM keeps full volume, clamps and replaces nonfinite samples", () => {
   const view = new DataView(pcm16(new Float32Array([-2, -1, 0, 1, 2, NaN])));
-  assert.deepEqual(Array.from({ length: 6 }, (_, i) => view.getInt16(i * 2, true)), [-32768, -26214, 0, 26214, 32767, 0]);
+  assert.deepEqual(Array.from({ length: 6 }, (_, i) => view.getInt16(i * 2, true)), [-32768, -32768, 0, 32767, 32767, 0]);
 });
 test("WAV stores mono 16k PCM in a valid RIFF header", async () => {
   const data = await wav(pcm16(new Float32Array(160))).arrayBuffer();

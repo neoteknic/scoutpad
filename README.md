@@ -20,6 +20,7 @@ Les applications Android et Windows partagent le meme backend dans `bridge/mobil
 - Conversion mono AAC-LC 16 kHz : MediaCodec natif sur Android, encodeur FFmpeg audio minimal inclus sur Windows, FFmpeg existant avec Node. MP3/WAV et les autres formats decodables par le navigateur sont acceptes.
 - Lecture sans armer ni deplacer le robot. Simulation n'envoie pas de son ; une suspension de l'application arrete la lecture.
 - Le haut-parleur du Scout prend environ 2 secondes a se preparer. L'etat indique l'envoi des trames ROS, pas une confirmation acoustique du robot.
+- Les nouveaux imports gardent 100 % du niveau du fichier, sans attenuation ni amplification au-dela du maximum numerique. Le firmware ROS ne fournit pas de reglage du volume de l'amplificateur. Reimporter les sons encodes precedemment a 80 % pour beneficier du niveau plein.
 - Les sons restent propres a l'origine de l'interface : navigateur Node 5173 et application Windows 18114 ont des bibliotheques distinctes. Effacer les donnees de l'app/navigateur supprime les sons.
 
 ### Changements 1.1.2

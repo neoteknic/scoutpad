@@ -7,7 +7,7 @@ export function pcm16(samples) {
   const pcm = new ArrayBuffer(samples.length * 2);
   const view = new DataView(pcm);
   for (let i = 0; i < samples.length; i++) {
-    const value = Math.max(-1, Math.min(1, Number.isFinite(samples[i]) ? samples[i] * 0.8 : 0));
+    const value = Math.max(-1, Math.min(1, Number.isFinite(samples[i]) ? samples[i] : 0));
     view.setInt16(i * 2, Math.round(value * (value < 0 ? 32768 : 32767)), true);
   }
   return pcm;
